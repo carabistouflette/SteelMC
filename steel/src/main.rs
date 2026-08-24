@@ -83,6 +83,13 @@ async fn init_tracing(
 
     let tracing = tracing_subscriber::registry();
 
+    // Leases the console aggregator onto the main runtime; attach with
+    // `tokio-console` (default http://127.0.0.1:6669). Requires
+    // RUSTFLAGS="--cfg tokio_unstable".
+    #[cfg(feature = "tokio-console")]
+    let tracing =
+        tracing.with(console_subscriber::ConsoleLayer::builder().with_default_env().spawn());
+
     #[cfg(feature = "jaeger")]
     let tracing = tracing.with(init_jaeger());
 

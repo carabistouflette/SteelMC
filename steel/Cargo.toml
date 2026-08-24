@@ -49,6 +49,7 @@ mimalloc = { version = "0.1.52", optional = true }
 
 # Profiling
 dhat = { version = "0.3.3", optional = true }
+console-subscriber = { workspace = true, optional = true }
 strip-ansi-escapes = "0.2.1"
 
 [lints]
@@ -62,6 +63,8 @@ default = ["mimalloc"]
 stand-alone = []
 deadlock_detection = ["dep:parking_lot"]
 dhat-heap = ["dhat"]
+# Async task inspector (`tokio-console`); requires building with RUSTFLAGS="--cfg tokio_unstable"
+tokio-console = ["dep:console-subscriber"]
 mimalloc = ["dep:mimalloc"]
 slow_chunk_gen = ["steel-core/slow_chunk_gen"]
 jaeger = [
