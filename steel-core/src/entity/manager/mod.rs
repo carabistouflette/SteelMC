@@ -1741,12 +1741,9 @@ impl WorldEntityManager {
     /// Ticks live entities currently in the ticking visibility set.
     pub fn tick_entities(&self, _tick_count: i32, runs_normally: bool) -> FxHashSet<ChunkPos> {
         let mut dirty_chunks = FxHashSet::default();
-        let tick_candidates = self.ticking_entities_snapshot();
-        for entity in tick_candidates {
-            if !self.can_tick_entity_now(entity.id()) {
-                continue;
-            }
-
+        let tick_candidates = self.ticking_candidates_snapshot();
+        for candidate in tick_candidates {
+            let entity = candidate.entity;
             if entity.is_removed() {
                 continue;
             }
@@ -1755,10 +1752,9 @@ impl WorldEntityManager {
                 continue;
             }
 
-            let entity_chunk = self.live_manager_owned_entity_chunk(entity.id());
             entity.check_despawn();
             if entity.is_removed() {
-                if let Some(chunk) = entity_chunk {
+                if let Some(chunk) = candidate.chunk {
                     dirty_chunks.insert(chunk);
                 }
                 continue;
@@ -1775,10 +1771,27 @@ impl WorldEntityManager {
         dirty_chunks
     }
 
-    fn ticking_entities_snapshot(&self) -> Vec<SharedEntity> {
-        self.state.read().tick_list.snapshot()
+    fn ticking_candidates_snapshot(&self) -> Vec<TickingCandidate> {
+        let state = self.state.read();
+        let entities = state.tick_list.snapshot();
+        let mut candidates = Vec::with_capacity(entities.len());
+        for entity in entities {
+            let entity_id = entity.id();
+            let Some(entry) = state.live_by_id.get(&entity_id) else {
+                continue;
+            };
+            if Self::has_pending_world_change_in_vehicle_chain(&entry.entity) {
+                continue;
+            }
+            let chunk = if entry.ownership == EntityOwnership::ManagerOwned {
+                Some(entry.chunk)
+            } else {
+                None
+            };
+            candidates.push(TickingCandidate { entity, chunk });
+        }
+        candidates
     }
-
     fn live_manager_owned_entity_chunk(&self, entity_id: i32) -> Option<ChunkPos> {
         self.state
             .read()
@@ -2241,6 +2254,11 @@ impl WorldEntityManager {
             state.by_chunk.remove(&chunk);
         }
     }
+}
+
+struct TickingCandidate {
+    entity: SharedEntity,
+    chunk: Option<ChunkPos>,
 }
 
 impl Default for WorldEntityManager {
