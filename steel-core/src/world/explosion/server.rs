@@ -934,21 +934,18 @@ impl<'a> ServerExplosion<'a> {
             BlockPos::from(bounds.min_corner()),
             BlockPos::from(bounds.max_corner()),
         );
-        // The freshly constructed cache is already safe for the first target.
         let mut reusable_from_previous_tnt = true;
+        let mut tnt_memo = [TntExposureMemo::EMPTY; 8];
 
         for entity in entities {
-            // Exact Steel PrimedTNT rejects damage, keeps the base no-op explosion callback, and
-            // only accepts the impulse. With built-in entity effects, no block mutation can occur
-            // between these targets, so their static exposure shapes remain current.
             let inert_primed_tnt = builtin_entity_effects
                 && steel_utils::Downcast::downcast_ref::<PrimedTntEntity>(entity.as_ref())
                     .is_some();
             if !reusable_from_previous_tnt || !inert_primed_tnt {
                 exposure_raycast.clear();
+                tnt_memo = [TntExposureMemo::EMPTY; 8];
             }
             reusable_from_previous_tnt = inert_primed_tnt;
-
             if entity.ignore_explosion(self) {
                 continue;
             }
@@ -957,60 +954,118 @@ impl<'a> ServerExplosion<'a> {
                 continue;
             }
 
-            let delta = entity.explosion_damage_origin() - self.center;
-            let delta_length = delta.length();
-            let direction = if delta_length < NORMALIZE_EPSILON {
-                DVec3::ZERO
-            } else {
-                delta / delta_length
-            };
             let should_damage = self
                 .damage_calculator
                 .should_damage_entity(self, entity.as_ref());
             let knockback_multiplier = self.damage_calculator.knockback_multiplier(entity.as_ref());
-            let exposure = if !should_damage && knockback_multiplier == 0.0 {
-                0.0
-            } else {
-                EntityExplosionExposure::capture(entity.as_ref())
-                    .calculate_cached_with(&mut exposure_raycast, self.center)
-            };
+            let exposure = self.calculate_entity_exposure(
+                entity.as_ref(),
+                should_damage,
+                knockback_multiplier,
+                inert_primed_tnt,
+                &mut exposure_raycast,
+                &mut tnt_memo,
+            );
 
-            if should_damage {
-                let amount =
-                    self.damage_calculator
-                        .entity_damage_amount(self, entity.as_ref(), exposure);
-                entity.hurt(self.world, &self.damage_source, amount);
-            }
-
-            let knockback_resistance = entity.as_living_entity().map_or(0.0, |living| {
-                living
-                    .attributes()
-                    .lock()
-                    .required_value(vanilla_attributes::EXPLOSION_KNOCKBACK_RESISTANCE)
-            });
-            let knockback_power = (1.0 - distance)
-                * f64::from(exposure)
-                * f64::from(knockback_multiplier)
-                * (1.0 - knockback_resistance);
-            let knockback = direction * knockback_power;
-            entity.push_impulse(knockback);
-
-            if REGISTRY.entity_types.is_in_tag(
-                entity.entity_type(),
-                &EntityTypeTag::REDIRECTABLE_PROJECTILE,
-            ) {
-                if let Some(projectile) = entity.as_projectile() {
-                    projectile.set_owner_entity(redirect_owner.as_ref());
-                }
-            } else if let Some(player) = entity.as_player()
-                && !player.is_spectator()
-                && (player.game_mode() != GameType::Creative || !player.abilities.lock().flying)
-            {
-                self.hit_players.insert(player.id(), knockback);
-            }
-
-            entity.on_explosion_hit(self.source);
+            self.apply_entity_explosion_effects(
+                entity.as_ref(),
+                distance,
+                exposure,
+                should_damage,
+                knockback_multiplier,
+                redirect_owner.as_ref(),
+            );
         }
+    }
+
+    fn calculate_entity_exposure(
+        &self,
+        entity: &dyn Entity,
+        should_damage: bool,
+        knockback_multiplier: f32,
+        inert_primed_tnt: bool,
+        exposure_raycast: &mut ExplosionExposureRaycast<'_>,
+        tnt_memo: &mut [TntExposureMemo; 8],
+    ) -> f32 {
+        if !should_damage && knockback_multiplier == 0.0 {
+            0.0
+        } else if inert_primed_tnt {
+            let entity_box = entity.bounding_box();
+            let memo_idx = ((entity_box.min_x().to_bits()
+                ^ entity_box.min_y().to_bits()
+                ^ entity_box.min_z().to_bits()) as usize)
+                & 7;
+            let entry = tnt_memo[memo_idx];
+            if entry.valid && entry.bounding_box == entity_box {
+                entry.exposure
+            } else {
+                let calculated = EntityExplosionExposure::capture(entity)
+                    .calculate_cached_with(exposure_raycast, self.center);
+                tnt_memo[memo_idx] = TntExposureMemo {
+                    bounding_box: entity_box,
+                    exposure: calculated,
+                    valid: true,
+                };
+                calculated
+            }
+        } else {
+            EntityExplosionExposure::capture(entity)
+                .calculate_cached_with(exposure_raycast, self.center)
+        }
+    }
+
+    fn apply_entity_explosion_effects(
+        &mut self,
+        entity: &dyn Entity,
+        distance: f64,
+        exposure: f32,
+        should_damage: bool,
+        knockback_multiplier: f32,
+        redirect_owner: Option<&SharedEntity>,
+    ) {
+        let delta = entity.explosion_damage_origin() - self.center;
+        let delta_length = delta.length();
+        let direction = if delta_length < NORMALIZE_EPSILON {
+            DVec3::ZERO
+        } else {
+            delta / delta_length
+        };
+
+        if should_damage {
+            let amount = self
+                .damage_calculator
+                .entity_damage_amount(self, entity, exposure);
+            entity.hurt(self.world, &self.damage_source, amount);
+        }
+
+        let knockback_resistance = entity.as_living_entity().map_or(0.0, |living| {
+            living
+                .attributes()
+                .lock()
+                .required_value(vanilla_attributes::EXPLOSION_KNOCKBACK_RESISTANCE)
+        });
+        let knockback_power = (1.0 - distance)
+            * f64::from(exposure)
+            * f64::from(knockback_multiplier)
+            * (1.0 - knockback_resistance);
+        let knockback = direction * knockback_power;
+        entity.push_impulse(knockback);
+
+        if REGISTRY.entity_types.is_in_tag(
+            entity.entity_type(),
+            &EntityTypeTag::REDIRECTABLE_PROJECTILE,
+        ) {
+            if let Some(projectile) = entity.as_projectile() {
+                projectile.set_owner_entity(redirect_owner);
+            }
+        } else if let Some(player) = entity.as_player()
+            && !player.is_spectator()
+            && (player.game_mode() != GameType::Creative || !player.abilities.lock().flying)
+        {
+            self.hit_players.insert(player.id(), knockback);
+        }
+
+        entity.on_explosion_hit(self.source);
     }
 
     fn interact_with_blocks(&self, affected: &mut [BlockPos]) {
@@ -1511,11 +1566,26 @@ impl Explosion for ServerExplosion<'_> {
     }
 }
 
+#[derive(Clone, Copy)]
+struct TntExposureMemo {
+    bounding_box: WorldAabb,
+    exposure: f32,
+    valid: bool,
+}
+
+impl TntExposureMemo {
+    const EMPTY: Self = Self {
+        bounding_box: WorldAabb::new(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+        exposure: 0.0,
+        valid: false,
+    };
+}
+
 fn default_explosion_damage_source(
     direct: Option<&dyn Entity>,
     indirect: Option<&dyn Entity>,
 ) -> DamageSource {
-    let damage_type = if direct.is_some() && indirect.is_some() {
+    let damage_type = if indirect.is_some_and(|entity| entity.as_player().is_some()) {
         &vanilla_damage_types::PLAYER_EXPLOSION
     } else {
         &vanilla_damage_types::EXPLOSION
