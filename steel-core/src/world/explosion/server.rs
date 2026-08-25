@@ -1077,11 +1077,13 @@ impl<'a> ServerExplosion<'a> {
         });
         let mut stacks = Vec::new();
         let mut full_chunks = LocalFullChunkHolderCache::new();
-
         for &pos in affected.iter() {
             let state = self
                 .world
                 .get_block_state_with_local_holder_cache(pos, &mut full_chunks);
+            if state.is_air() {
+                continue;
+            }
             BLOCK_BEHAVIORS
                 .get_behavior(state.get_block())
                 .on_explosion_hit(state, self.world, pos, self, &mut |stack, stack_pos| {
