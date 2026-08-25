@@ -4,9 +4,25 @@ use std::hint::black_box;
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use glam::DVec3;
 use steel_core::world::explosion_benchmark_support::{
-    run_mass_detonation, run_single_explosion, setup_benchmark_world, test_stable_air_box_is_clear,
+    run_e2e_tnt_chain_detonation, run_mass_detonation, run_single_explosion, setup_benchmark_world,
+    test_stable_air_box_is_clear,
 };
 use steel_utils::ChunkPos;
+
+fn bench_e2e_1000_tnt_chain(c: &mut Criterion) {
+    let world = setup_benchmark_world("e2e_tnt_chain_bench");
+    let mut group = c.benchmark_group("e2e_gameplay/1000_tnt_chain_detonation");
+    group.throughput(Throughput::Elements(1000));
+    group.sample_size(10);
+
+    group.bench_function("1000_tnt_chain", |b| {
+        b.iter(|| {
+            let affected = run_e2e_tnt_chain_detonation(&world, 1000);
+            black_box(affected)
+        });
+    });
+    group.finish();
+}
 
 fn bench_single_explosion_radius_4(c: &mut Criterion) {
     let world = setup_benchmark_world("single_explosion_bench");
@@ -54,6 +70,7 @@ fn bench_stable_air_box_is_clear(c: &mut Criterion) {
 
 criterion_group!(
     benches,
+    bench_e2e_1000_tnt_chain,
     bench_single_explosion_radius_4,
     bench_mass_detonation_100_tnt,
     bench_stable_air_box_is_clear,
