@@ -1,4 +1,5 @@
 //! A paletted container is a container that can be either homogeneous or heterogeneous.
+use rustc_hash::{FxBuildHasher, FxHashMap};
 use std::{
     fmt::Debug,
     hash::Hash,
@@ -374,26 +375,63 @@ impl<V: Hash + Eq + Copy + Default + Debug, const DIM: usize> PalettedContainer<
                     PaletteMode::Global => {}
                 }
 
-                // Pack data
-                let indices: Vec<u32> = data
-                    .cube
-                    .iter()
-                    .flatten()
-                    .flatten()
-                    .map(|val| {
-                        if matches!(mode, PaletteMode::Global) {
-                            val.to_global_id()
-                        } else {
-                            data.palette.iter().position(|(v, _)| v == val).unwrap() as u32
+                // Pack data directly on-the-fly without intermediate Vec allocations.
+                let values_per_long = 64 / bits as usize;
+                let bits_usize = bits as usize;
+                let mut current_long = 0u64;
+                let mut count_in_long = 0usize;
+
+                // SAFETY: `data.cube` is a contiguous array of `DIM*DIM*DIM` `V` elements.
+                let flat_cube: &[V] = unsafe {
+                    slice::from_raw_parts(data.cube.as_ptr().cast::<V>(), DIM * DIM * DIM)
+                };
+
+                if matches!(mode, PaletteMode::Global) {
+                    for &val in flat_cube {
+                        let idx = val.to_global_id();
+                        current_long |= u64::from(idx) << (count_in_long * bits_usize);
+                        count_in_long += 1;
+                        if count_in_long == values_per_long {
+                            current_long.write(writer)?;
+                            current_long = 0;
+                            count_in_long = 0;
                         }
-                    })
-                    .collect();
+                    }
+                } else if data.palette.len() <= 4 {
+                    for &val in flat_cube {
+                        let idx = data
+                            .palette
+                            .iter()
+                            .position(|(v, _)| *v == val)
+                            .unwrap_or(0) as u32;
+                        current_long |= u64::from(idx) << (count_in_long * bits_usize);
+                        count_in_long += 1;
+                        if count_in_long == values_per_long {
+                            current_long.write(writer)?;
+                            current_long = 0;
+                            count_in_long = 0;
+                        }
+                    }
+                } else {
+                    let mut lookup =
+                        FxHashMap::with_capacity_and_hasher(data.palette.len(), FxBuildHasher);
+                    for (i, (v, _)) in data.palette.iter().enumerate() {
+                        lookup.insert(*v, i as u32);
+                    }
+                    for &val in flat_cube {
+                        let idx = lookup.get(&val).copied().unwrap_or(0);
+                        current_long |= u64::from(idx) << (count_in_long * bits_usize);
+                        count_in_long += 1;
+                        if count_in_long == values_per_long {
+                            current_long.write(writer)?;
+                            current_long = 0;
+                            count_in_long = 0;
+                        }
+                    }
+                }
 
-                let packed = pack_bits(&indices, bits as usize);
-
-                // writeFixedSizeLongArray: raw longs, no VarInt length prefix
-                for long in packed {
-                    long.write(writer)?;
+                if count_in_long > 0 {
+                    current_long.write(writer)?;
                 }
             }
             Self::Building(_) => {
@@ -429,20 +467,6 @@ impl<V: Hash + Eq + Copy + Default + Debug, const DIM: usize> PalettedContainer<
             }
         }
     }
-}
-
-fn pack_bits(indices: &[u32], bits: usize) -> Vec<u64> {
-    let values_per_long = 64 / bits;
-    let len = indices.len().div_ceil(values_per_long);
-    let mut data = vec![0u64; len];
-
-    for (i, &index) in indices.iter().enumerate() {
-        let array_index = i / values_per_long;
-        let offset = (i % values_per_long) * bits;
-        data[array_index] |= u64::from(index) << offset;
-    }
-
-    data
 }
 
 /// A palette container for blocks.
