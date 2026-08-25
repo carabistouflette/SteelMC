@@ -5,13 +5,14 @@ use std::hint::black_box;
 use std::sync::{Arc, Weak};
 use steel_core::bootstrap::init_globals_once;
 use steel_core::chunk::chunk_ticket_manager::{ChunkTicket, ChunkTicketLevel, ChunkTicketManager};
+use steel_core::chunk::paletted_container::PalettedContainer;
 use steel_core::entity::{
     Entity, EntityBase, EntityOwnership, EntityVisibility, SharedEntity, WorldEntityManager,
 };
 use steel_registry::entity_type::EntityTypeRef;
 use steel_registry::vanilla_entities;
 use steel_utils::downcast::{DowncastType, DowncastTypeKey};
-use steel_utils::{ChunkPos, WorldAabb};
+use steel_utils::{BlockStateId, ChunkPos, WorldAabb};
 use uuid::Uuid;
 
 struct BenchEntity {
@@ -189,9 +190,71 @@ fn bench_spatial_entity_manager(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_paletted_container_write(c: &mut Criterion) {
+    let mut group = c.benchmark_group("paletted_container_write");
+
+    let homogeneous: PalettedContainer<BlockStateId, 16> =
+        PalettedContainer::Homogeneous(BlockStateId(1));
+
+    let mut cube16 = Box::new([[[BlockStateId(0); 16]; 16]; 16]);
+    for y in 0..16 {
+        for z in 0..16 {
+            for x in 0..16 {
+                cube16[y][z][x] = BlockStateId(((x + z + y) % 16) as u16);
+            }
+        }
+    }
+    let palette16 = PalettedContainer::from_cube(cube16);
+
+    let mut cube64 = Box::new([[[BlockStateId(0); 16]; 16]; 16]);
+    for y in 0..16 {
+        for z in 0..16 {
+            for x in 0..16 {
+                cube64[y][z][x] = BlockStateId(((x + z * 16 + y * 256) % 64) as u16);
+            }
+        }
+    }
+    let palette64 = PalettedContainer::from_cube(cube64);
+
+    let mut cube256 = Box::new([[[BlockStateId(0); 16]; 16]; 16]);
+    for y in 0..16 {
+        for z in 0..16 {
+            for x in 0..16 {
+                cube256[y][z][x] = BlockStateId(((x + z * 16 + y * 256) % 256) as u16);
+            }
+        }
+    }
+    let palette256 = PalettedContainer::from_cube(cube256);
+
+    let cases = [
+        ("homogeneous", &homogeneous),
+        ("16_entries", &palette16),
+        ("64_entries", &palette64),
+        ("256_entries", &palette256),
+    ];
+
+    for (name, container) in cases {
+        group.bench_with_input(
+            BenchmarkId::new("write", name),
+            container,
+            |b, container| {
+                let mut sink = Vec::with_capacity(4096);
+                b.iter(|| {
+                    sink.clear();
+                    let _ = container.write(&mut sink);
+                    black_box(sink.len())
+                });
+            },
+        );
+    }
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_ticket_propagation,
-    bench_spatial_entity_manager
+    bench_spatial_entity_manager,
+    bench_paletted_container_write
 );
 criterion_main!(benches);
