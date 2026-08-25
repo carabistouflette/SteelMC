@@ -25,7 +25,11 @@ pub mod poi;
 pub(crate) mod portal;
 pub mod scoreboard;
 pub mod server;
-#[cfg(test)]
+#[cfg(any(test, feature = "benchmark-support"))]
+#[expect(
+    unused,
+    reason = "test fixtures shared across test and benchmark targets"
+)]
 #[path = "../tests/support/mod.rs"]
 pub(crate) mod test_support;
 pub mod world;
