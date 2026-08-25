@@ -1,12 +1,13 @@
 use std::{
     cell::RefCell,
-    mem,
+    mem, ptr,
     sync::{Arc, LazyLock},
     vec::IntoIter,
 };
 
 use glam::DVec3;
 use rustc_hash::FxHashMap;
+use smallvec::SmallVec;
 use steel_registry::blocks::block_state_ext::BlockStateExt as _;
 use steel_registry::item_stack::ItemStack;
 use steel_registry::vanilla_entity_type_tags::EntityTypeTag;
@@ -1072,7 +1073,7 @@ impl<'a> ServerExplosion<'a> {
         self.world.with_random(|random| {
             vanilla_shuffle(affected, |bound| random.next_i32_bounded(bound));
         });
-        let mut stacks = Vec::new();
+        let mut collector = LootCollector::new();
         let mut full_chunks = LocalFullChunkHolderCache::new();
 
         for &pos in affected.iter() {
@@ -1082,11 +1083,11 @@ impl<'a> ServerExplosion<'a> {
             BLOCK_BEHAVIORS
                 .get_behavior(state.get_block())
                 .on_explosion_hit(state, self.world, pos, self, &mut |stack, stack_pos| {
-                    add_or_append_stack(&mut stacks, stack, stack_pos);
+                    collector.add_or_append(stack, stack_pos);
                 });
         }
 
-        for stack in stacks {
+        for stack in collector.stacks {
             self.world.pop_resource(stack.pos, stack.stack);
         }
     }
@@ -1847,25 +1848,60 @@ struct StackCollector {
     stack: ItemStack,
 }
 
-fn add_or_append_stack(stacks: &mut Vec<StackCollector>, mut stack: ItemStack, pos: BlockPos) {
-    for collector in stacks.iter_mut() {
-        if ItemEntity::are_mergeable(&collector.stack, &stack) {
-            let available = collector
-                .stack
-                .max_stack_size()
-                .min(MAX_DROPS_PER_COMBINED_STACK)
-                - collector.stack.count();
-            let transferred = available.min(stack.count());
-            collector.stack = collector
-                .stack
-                .copy_with_count(collector.stack.count() + transferred);
-            stack.shrink(transferred);
-            if stack.is_empty() {
-                return;
-            }
+struct LootCollector {
+    stacks: Vec<StackCollector>,
+    by_item: FxHashMap<usize, SmallVec<[usize; 4]>>,
+}
+
+impl LootCollector {
+    fn new() -> Self {
+        Self {
+            stacks: Vec::new(),
+            by_item: FxHashMap::default(),
         }
     }
-    stacks.push(StackCollector { pos, stack });
+
+    fn add_or_append(&mut self, mut stack: ItemStack, pos: BlockPos) {
+        let item_key = ptr::from_ref(stack.item()) as usize;
+        if let Some(indices) = self.by_item.get_mut(&item_key) {
+            for &idx in indices.iter() {
+                let collector = &mut self.stacks[idx];
+                if ItemEntity::are_mergeable(&collector.stack, &stack) {
+                    let available = collector
+                        .stack
+                        .max_stack_size()
+                        .min(MAX_DROPS_PER_COMBINED_STACK)
+                        - collector.stack.count();
+                    let transferred = available.min(stack.count());
+                    collector.stack = collector
+                        .stack
+                        .copy_with_count(collector.stack.count() + transferred);
+                    stack.shrink(transferred);
+                    if stack.is_empty() {
+                        return;
+                    }
+                }
+            }
+        }
+
+        let new_index = self.stacks.len();
+        self.stacks.push(StackCollector { pos, stack });
+        self.by_item.entry(item_key).or_default().push(new_index);
+    }
+}
+
+#[cfg(test)]
+fn add_or_append_stack(stacks: &mut Vec<StackCollector>, stack: ItemStack, pos: BlockPos) {
+    let mut collector = LootCollector {
+        stacks: mem::take(stacks),
+        by_item: FxHashMap::default(),
+    };
+    for (idx, item) in collector.stacks.iter().enumerate() {
+        let item_key = ptr::from_ref(item.stack.item()) as usize;
+        collector.by_item.entry(item_key).or_default().push(idx);
+    }
+    collector.add_or_append(stack, pos);
+    *stacks = collector.stacks;
 }
 
 #[cfg(test)]
