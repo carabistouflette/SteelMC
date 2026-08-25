@@ -138,6 +138,7 @@ use crate::worldgen::generators::vanilla::fuzzed_biome_at_block;
 use crate::worldgen::{ChunkGenerator, ChunkGeneratorType};
 use block_event::BlockEventQueue;
 pub(crate) use block_region::{BlockRegionBounds, BlockRegionRead, MAX_BLOCK_REGION_WORKSET_SLOTS};
+
 use block_updates::CollectingNeighborUpdater;
 pub use border::WorldBorderError;
 use border::{WorldBorder, WorldBorderSnapshot};
@@ -145,6 +146,8 @@ pub(crate) use domain_entity_directory::DomainEntityDirectory;
 use entity_management::NavigatingMobTracker;
 #[cfg(test)]
 use entity_management::nearest_player_distance_in_range;
+#[cfg(feature = "benchmark-support")]
+pub use explosion::benchmark_support as explosion_benchmark_support;
 pub use explosion::{
     BlockInteraction, DefaultExplosionDamageCalculator, EntityBasedExplosionDamageCalculator,
     Explosion, ExplosionDamageCalculator, ExplosionInteraction, ExplosionOptions, ExplosionOutcome,
