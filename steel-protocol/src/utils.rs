@@ -142,11 +142,12 @@ impl From<io::Error> for PacketError {
     }
 }
 
-///NOTE: This makes lots of small writes; make sure there is a buffer somewhere down the line
+/// A stream that encrypts data with AES-128-CFB8.
 pub struct StreamEncryptor<W: AsyncWrite + Unpin> {
     cipher: Aes128Cfb8Enc,
     write: W,
-    last_unwritten_encrypted_byte: Option<u8>,
+    buffer: Vec<u8>,
+    buffer_offset: usize,
 }
 
 impl<W: AsyncWrite + Unpin> StreamEncryptor<W> {
@@ -156,78 +157,111 @@ impl<W: AsyncWrite + Unpin> StreamEncryptor<W> {
         Self {
             cipher,
             write: stream,
-            last_unwritten_encrypted_byte: None,
+            buffer: Vec::with_capacity(4096),
+            buffer_offset: 0,
         }
+    }
+
+    fn flush_buffered_encrypted(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        while self.buffer_offset < self.buffer.len() {
+            let write = Pin::new(&mut self.write);
+            match write.poll_write(cx, &self.buffer[self.buffer_offset..]) {
+                Poll::Pending => return Poll::Pending,
+                Poll::Ready(Ok(0)) => {
+                    return Poll::Ready(Err(io::Error::new(
+                        io::ErrorKind::WriteZero,
+                        "failed to write buffered encrypted stream data",
+                    )));
+                }
+                Poll::Ready(Ok(n)) => {
+                    self.buffer_offset += n;
+                }
+                Poll::Ready(Err(err)) => return Poll::Ready(Err(err)),
+            }
+        }
+        self.buffer.clear();
+        self.buffer_offset = 0;
+        Poll::Ready(Ok(()))
     }
 }
 
 impl<W: AsyncWrite + Unpin> AsyncWrite for StreamEncryptor<W> {
-    #[expect(
-        clippy::unwrap_used,
-        reason = "CFB8 block size is one byte, so each chunk fits the cipher block type"
-    )]
     fn poll_write(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<io::Result<usize>> {
         let ref_self = self.get_mut();
-        let cipher = &mut ref_self.cipher;
 
-        let mut total_written = 0;
-        // Decrypt the raw data, note that our block size is 1 byte, so this is always safe
-        for block in buf.chunks(Aes128Cfb8Enc::block_size()) {
-            let mut out = [0u8];
-
-            if let Some(out_to_use) = ref_self.last_unwritten_encrypted_byte {
-                // This assumes that this `poll_write` is called on the same stream of bytes which I
-                // think is a fair assumption, since thats an invariant for the TCP stream anyway.
-
-                // This should never panic
-                out[0] = out_to_use;
-            } else {
-                // This is a stream cipher, so this value must be used
-                let out_block: &mut Array<u8, _> = (&mut out).into();
-                cipher.encrypt_block_b2b(block.try_into().unwrap(), out_block);
-            }
-
-            let write = Pin::new(&mut ref_self.write);
-            match write.poll_write(cx, &out) {
-                Poll::Pending => {
-                    ref_self.last_unwritten_encrypted_byte = Some(out[0]);
-                    if total_written == 0 {
-                        //If we didn't write anything, return pending
-                        return Poll::Pending;
-                    }
-                    // Otherwise, we actually did write something
-                    return Poll::Ready(Ok(total_written));
-                }
-                Poll::Ready(result) => {
-                    ref_self.last_unwritten_encrypted_byte = None;
-                    match result {
-                        Ok(written) => total_written += written,
-                        Err(err) => return Poll::Ready(Err(err)),
-                    }
-                }
+        // Flush any previously buffered encrypted data first.
+        if ref_self.buffer_offset < ref_self.buffer.len() {
+            match ref_self.flush_buffered_encrypted(cx) {
+                Poll::Pending => return Poll::Pending,
+                Poll::Ready(Err(err)) => return Poll::Ready(Err(err)),
+                Poll::Ready(Ok(())) => {}
             }
         }
 
-        Poll::Ready(Ok(total_written))
+        if buf.is_empty() {
+            return Poll::Ready(Ok(0));
+        }
+
+        // Encrypt in batches up to 4 KiB
+        let batch_len = buf.len().min(4096);
+        let to_encrypt = &buf[..batch_len];
+        ref_self.buffer.clear();
+        ref_self.buffer_offset = 0;
+        ref_self.buffer.reserve(batch_len);
+
+        for chunk in to_encrypt.as_chunks::<1>().0 {
+            let mut out = [0u8];
+            let in_block: &Array<u8, _> = chunk.into();
+            let out_block: &mut Array<u8, _> = (&mut out).into();
+            ref_self.cipher.encrypt_block_b2b(in_block, out_block);
+            ref_self.buffer.push(out[0]);
+        }
+
+        let write = Pin::new(&mut ref_self.write);
+        match write.poll_write(cx, &ref_self.buffer) {
+            Poll::Pending => Poll::Ready(Ok(batch_len)),
+            Poll::Ready(Ok(n)) => {
+                ref_self.buffer_offset = n;
+                if ref_self.buffer_offset >= ref_self.buffer.len() {
+                    ref_self.buffer.clear();
+                    ref_self.buffer_offset = 0;
+                }
+                Poll::Ready(Ok(batch_len))
+            }
+            Poll::Ready(Err(err)) => Poll::Ready(Err(err)),
+        }
     }
 
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         let ref_self = self.get_mut();
+        if ref_self.buffer_offset < ref_self.buffer.len() {
+            match ref_self.flush_buffered_encrypted(cx) {
+                Poll::Pending => return Poll::Pending,
+                Poll::Ready(Err(err)) => return Poll::Ready(Err(err)),
+                Poll::Ready(Ok(())) => {}
+            }
+        }
         let write = Pin::new(&mut ref_self.write);
         write.poll_flush(cx)
     }
 
     fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         let ref_self = self.get_mut();
+        if ref_self.buffer_offset < ref_self.buffer.len() {
+            match ref_self.flush_buffered_encrypted(cx) {
+                Poll::Pending => return Poll::Pending,
+                Poll::Ready(Err(err)) => return Poll::Ready(Err(err)),
+                Poll::Ready(Ok(())) => {}
+            }
+        }
         let write = Pin::new(&mut ref_self.write);
         write.poll_shutdown(cx)
     }
 }
-
 /// A stream that decrypts data.
 pub struct StreamDecryptor<R: AsyncRead + Unpin> {
     cipher: Aes128Cfb8Dec,

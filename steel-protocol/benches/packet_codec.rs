@@ -4,12 +4,13 @@ use aes::cipher::{Array, BlockModeEncrypt, KeyIvInit};
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use std::hint::black_box;
 use std::io::Cursor;
-use steel_protocol::utils::Aes128Cfb8Enc;
+use steel_protocol::utils::{Aes128Cfb8Enc, StreamEncryptor};
 use steel_utils::{
     FrontVec,
     codec::VarInt,
     serial::{ReadFrom, WriteTo},
 };
+use tokio::io::AsyncWriteExt;
 
 fn bench_varint_encode(c: &mut Criterion) {
     let mut group = c.benchmark_group("varint_encode");
@@ -143,12 +144,42 @@ fn bench_paletted_bit_packing(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_stream_encryptor_write(c: &mut Criterion) {
+    let mut group = c.benchmark_group("stream_encryptor_write");
+    let key = [0x42u8; 16];
+    let iv = [0x24u8; 16];
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .expect("tokio runtime");
+
+    for size in [512, 4096, 65536] {
+        let data = vec![0xABu8; size];
+        group.throughput(Throughput::Bytes(size as u64));
+        group.bench_with_input(BenchmarkId::new("write_all", size), &size, |b, _| {
+            b.iter(|| {
+                rt.block_on(async {
+                    let cipher = Aes128Cfb8Enc::new_from_slices(&key, &iv).expect("valid key/iv");
+                    let mut encryptor = StreamEncryptor::new(cipher, tokio::io::sink());
+                    encryptor
+                        .write_all(black_box(&data))
+                        .await
+                        .expect("write_all");
+                    encryptor.flush().await.expect("flush");
+                });
+            });
+        });
+    }
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_varint_encode,
     bench_varint_decode,
     bench_varint_set_in_front,
     bench_aes128_cfb8_encryption,
-    bench_paletted_bit_packing
+    bench_paletted_bit_packing,
+    bench_stream_encryptor_write
 );
 criterion_main!(benches);
