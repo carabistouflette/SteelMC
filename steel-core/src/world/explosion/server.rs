@@ -293,24 +293,24 @@ impl DenseExplosionBlockCache<'_> {
     }
 
     #[inline]
-    fn cell_index_for(
+    const fn cell_index_for(
         min: BlockPos,
         size_x: usize,
         size_y: usize,
         size_z: usize,
         pos: BlockPos,
     ) -> Option<usize> {
-        let x = usize::try_from(i64::from(pos.x()) - i64::from(min.x())).ok()?;
-        let y = usize::try_from(i64::from(pos.y()) - i64::from(min.y())).ok()?;
-        let z = usize::try_from(i64::from(pos.z()) - i64::from(min.z())).ok()?;
-        if x >= size_x || y >= size_y || z >= size_z {
-            return None;
+        let x = (pos.x().wrapping_sub(min.x())) as u32 as usize;
+        let y = (pos.y().wrapping_sub(min.y())) as u32 as usize;
+        let z = (pos.z().wrapping_sub(min.z())) as u32 as usize;
+        if x < size_x && y < size_y && z < size_z {
+            Some((y * size_z + z) * size_x + x)
+        } else {
+            None
         }
-        Some((y * size_z + z) * size_x + x)
     }
-
     #[inline]
-    fn cell_index(&self, pos: BlockPos) -> Option<usize> {
+    const fn cell_index(&self, pos: BlockPos) -> Option<usize> {
         Self::cell_index_for(self.min, self.size_x, self.size_y, self.size_z, pos)
     }
 
@@ -329,7 +329,7 @@ impl DenseExplosionBlockCache<'_> {
 #[cfg(test)]
 impl StandaloneDenseExplosionBlockCache {
     #[inline]
-    fn cell_index(&self, pos: BlockPos) -> Option<usize> {
+    const fn cell_index(&self, pos: BlockPos) -> Option<usize> {
         DenseExplosionBlockCache::cell_index_for(
             self.min,
             self.size_x,
