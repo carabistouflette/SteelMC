@@ -1373,3 +1373,74 @@ fn combined_explosion_drops_never_exceed_vanilla_stack_limit() {
         INPUT_STACK_SIZE * 2 - VANILLA_COMBINED_DROP_STACK_LIMIT
     );
 }
+
+#[test]
+fn test_e2e_10000_tnt_detonation() {
+    use std::time::Instant;
+
+    init_vanilla_registry();
+    init_behaviors();
+    let world = fresh_test_world("e2e_10k_test");
+    for cx in -3..=3 {
+        for cz in -3..=3 {
+            insert_ready_full_chunk(&world, ChunkPos::new(cx, cz));
+        }
+    }
+
+    let stone = vanilla_blocks::STONE.default_state();
+    for x in -24..=24 {
+        for y in 48..=80 {
+            for z in -24..=24 {
+                if y <= 64 {
+                    world.set_block(
+                        BlockPos::new(x, y, z),
+                        stone,
+                        UpdateFlags::UPDATE_NONE | UpdateFlags::UPDATE_SKIP_ON_PLACE,
+                    );
+                }
+            }
+        }
+    }
+
+    const TOTAL_TNT: usize = 10_000;
+    const BATCH_SIZE: usize = 1_000;
+    let mut total_affected = 0;
+
+    println!("\n=== Starting E2E 10,000 TNT Mass Detonation Test ===");
+    let overall_start = Instant::now();
+
+    for batch in 0..(TOTAL_TNT / BATCH_SIZE) {
+        let batch_start = Instant::now();
+        let base_x = ((batch % 10) as f64 - 5.0) * 4.0;
+        let base_z = ((batch / 10) as f64 - 5.0) * 4.0;
+
+        for i in 0..BATCH_SIZE {
+            let ox = base_x + (i % 100) as f64 * 0.1;
+            let oz = base_z + (i / 100) as f64 * 0.1;
+            let center = DVec3::new(ox, 64.5, oz);
+            let options = ExplosionOptions::new(center, 4.0, ExplosionInteraction::Tnt);
+            total_affected += world.explode(options).affected_block_count;
+        }
+
+        let batch_elapsed = batch_start.elapsed();
+        let completed = (batch + 1) * BATCH_SIZE;
+        let throughput = BATCH_SIZE as f64 / batch_elapsed.as_secs_f64();
+        println!(
+            "  Progress: {:>5}/10,000 TNT in {:>8.2?} ({:>7.1} explosions/sec, total affected blocks: {})",
+            completed, batch_elapsed, throughput, total_affected
+        );
+    }
+
+    let total_elapsed = overall_start.elapsed();
+    let avg_throughput = TOTAL_TNT as f64 / total_elapsed.as_secs_f64();
+    let avg_latency = total_elapsed.as_secs_f64() * 1000.0 / TOTAL_TNT as f64;
+
+    println!("=== E2E 10,000 TNT Completed Successfully ===");
+    println!("  Total Time:       {:?}", total_elapsed);
+    println!("  Average Rate:     {:.1} explosions/sec", avg_throughput);
+    println!("  Average Latency:  {:.3} ms/explosion ({:.1} µs/explosion)", avg_latency, avg_latency * 1000.0);
+    println!("  Affected Blocks:  {}", total_affected);
+    println!("=============================================\n");
+
+    assert!(total_affected > 0);
+}
