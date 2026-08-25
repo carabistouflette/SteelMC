@@ -5,7 +5,7 @@ use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use glam::DVec3;
 use steel_core::world::explosion_benchmark_support::{
     run_e2e_tnt_chain_detonation, run_mass_detonation, run_single_explosion, setup_benchmark_world,
-    test_stable_air_box_is_clear,
+    spawn_stationary_tnt, test_stable_air_box_is_clear, tick_stationary_tnt,
 };
 use steel_utils::ChunkPos;
 
@@ -19,6 +19,26 @@ fn bench_e2e_1000_tnt_chain(c: &mut Criterion) {
         b.iter(|| {
             let affected = run_e2e_tnt_chain_detonation(&world, 1000);
             black_box(affected)
+        });
+    });
+    group.finish();
+}
+
+fn bench_stationary_tnt_tick(c: &mut Criterion) {
+    const TNT_COUNT: usize = 2_000;
+    const TICKS_PER_ITERATION: usize = 20;
+
+    let world = setup_benchmark_world("stationary_tnt_tick_bench");
+    let entities = spawn_stationary_tnt(&world, TNT_COUNT);
+    let mut group = c.benchmark_group("entity/stationary_tnt_tick");
+    group.throughput(Throughput::Elements(
+        (TNT_COUNT * TICKS_PER_ITERATION) as u64,
+    ));
+
+    group.bench_function("2000_tnt_x20_ticks", |b| {
+        b.iter(|| {
+            let ticks = tick_stationary_tnt(&entities, TICKS_PER_ITERATION);
+            black_box(ticks)
         });
     });
     group.finish();
@@ -71,6 +91,7 @@ fn bench_stable_air_box_is_clear(c: &mut Criterion) {
 criterion_group!(
     benches,
     bench_e2e_1000_tnt_chain,
+    bench_stationary_tnt_tick,
     bench_single_explosion_radius_4,
     bench_mass_detonation_100_tnt,
     bench_stable_air_box_is_clear,
