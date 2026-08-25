@@ -811,18 +811,37 @@ impl ChunkMap {
                     world.broadcast_block_entity_if_needed(block_pos);
                 } else {
                     // Multiple block changes - use CSectionBlocksUpdate
-                    let changes: Vec<BlockChange> = changed_positions
-                        .iter()
-                        .map(|&packed| {
-                            let block_pos = section_pos.relative_to_block_pos(packed);
-                            let block_state = world.get_block_state(block_pos);
-                            BlockChange {
-                                pos: packed,
-                                block_state,
-                            }
-                        })
-                        .collect();
-
+                    let changes: Vec<BlockChange> = if let Some(chunk) =
+                        holder.try_chunk(ChunkStatus::Full)
+                        && let Some(section) = chunk.sections.sections.get(section_index)
+                    {
+                        let section_read = section.read();
+                        changed_positions
+                            .iter()
+                            .map(|&packed| {
+                                let local_index =
+                                    (usize::from(packed.y()) * 16 + usize::from(packed.z())) * 16
+                                        + usize::from(packed.x());
+                                let block_state = section_read.states().get_at_index(local_index);
+                                BlockChange {
+                                    pos: packed,
+                                    block_state,
+                                }
+                            })
+                            .collect()
+                    } else {
+                        changed_positions
+                            .iter()
+                            .map(|&packed| {
+                                let block_pos = section_pos.relative_to_block_pos(packed);
+                                let block_state = world.get_block_state(block_pos);
+                                BlockChange {
+                                    pos: packed,
+                                    block_state,
+                                }
+                            })
+                            .collect()
+                    };
                     tracing::trace!(
                         change_count = changes.len(),
                         ?section_pos,
