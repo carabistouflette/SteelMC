@@ -1,4 +1,5 @@
 use std::{
+    cell::RefCell,
     mem,
     sync::{Arc, LazyLock},
     vec::IntoIter,
@@ -106,8 +107,15 @@ struct ExplosionBlockCache {
     entries: [ExplosionBlockCacheEntry; BLOCK_CACHE_SIZE],
 }
 
-#[repr(C)]
-#[derive(Clone, Copy)]
+#[repr(C, align(8))]
+#[derive(Clone, Copy, Default)]
+struct DenseExplosionBlockCacheSlot {
+    generation: u32,
+    entry_index: u32,
+}
+
+#[repr(C, align(8))]
+#[derive(Clone, Copy, Default)]
 struct DenseExplosionBlockCacheEntry {
     resistance: f32,
     state: BlockStateId,
@@ -118,13 +126,70 @@ struct DenseExplosionBlockCacheEntry {
 const _: [(); DENSE_BLOCK_CACHE_ENTRY_SIZE_BYTES] =
     [(); mem::size_of::<DenseExplosionBlockCacheEntry>()];
 
-struct DenseExplosionBlockCache {
+struct DenseExplosionBlockCacheScratchpad {
+    generation: u32,
+    slots: Vec<DenseExplosionBlockCacheSlot>,
+    entries: Vec<DenseExplosionBlockCacheEntry>,
+}
+
+impl DenseExplosionBlockCacheScratchpad {
+    const fn new() -> Self {
+        Self {
+            generation: 1,
+            slots: Vec::new(),
+            entries: Vec::new(),
+        }
+    }
+
+    fn prepare(&mut self, volume: usize) -> u32 {
+        if self.slots.len() < volume {
+            self.slots
+                .resize(volume, DenseExplosionBlockCacheSlot::default());
+        }
+        self.entries.clear();
+        let next_gen = self.generation.wrapping_add(1);
+        if next_gen == 0 {
+            self.slots.fill(DenseExplosionBlockCacheSlot::default());
+            self.generation = 1;
+            1
+        } else {
+            self.generation = next_gen;
+            next_gen
+        }
+    }
+
+    fn split_borrow_mut(
+        &mut self,
+        volume: usize,
+    ) -> (
+        &mut [DenseExplosionBlockCacheSlot],
+        &mut Vec<DenseExplosionBlockCacheEntry>,
+    ) {
+        (&mut self.slots[..volume], &mut self.entries)
+    }
+}
+
+thread_local! {
+    static DENSE_CACHE_SCRATCHPAD: RefCell<DenseExplosionBlockCacheScratchpad> =
+        const { RefCell::new(DenseExplosionBlockCacheScratchpad::new()) };
+}
+
+struct DenseExplosionBlockCache<'a> {
     min: BlockPos,
     size_x: usize,
     size_y: usize,
     size_z: usize,
-    slots: Vec<u16>,
-    entries: Vec<DenseExplosionBlockCacheEntry>,
+    generation: u32,
+    slots: &'a mut [DenseExplosionBlockCacheSlot],
+    entries: &'a mut Vec<DenseExplosionBlockCacheEntry>,
+}
+
+#[cfg(test)]
+struct StandaloneDenseExplosionBlockCache {
+    min: BlockPos,
+    size_x: usize,
+    size_y: usize,
+    size_z: usize,
 }
 
 #[derive(Clone, Copy)]
@@ -211,8 +276,8 @@ impl ExplosionRayBlockCache for ExplosionBlockCache {
     }
 }
 
-impl DenseExplosionBlockCache {
-    fn try_new(bounds: BlockRegionBounds) -> Option<Self> {
+impl DenseExplosionBlockCache<'_> {
+    fn try_dimensions(bounds: BlockRegionBounds) -> Option<(BlockPos, usize, usize, usize, usize)> {
         let (min, max) = bounds.corners();
         let size_x = inclusive_block_count(min.x(), max.x())?;
         let size_y = inclusive_block_count(min.y(), max.y())?;
@@ -224,39 +289,68 @@ impl DenseExplosionBlockCache {
             return None;
         }
 
-        Some(Self {
-            min,
-            size_x,
-            size_y,
-            size_z,
-            slots: vec![EMPTY_DENSE_BLOCK_CACHE_SLOT; volume],
-            entries: Vec::with_capacity(volume),
-        })
+        Some((min, size_x, size_y, size_z, volume))
+    }
+
+    #[inline]
+    fn cell_index_for(
+        min: BlockPos,
+        size_x: usize,
+        size_y: usize,
+        size_z: usize,
+        pos: BlockPos,
+    ) -> Option<usize> {
+        let x = usize::try_from(i64::from(pos.x()) - i64::from(min.x())).ok()?;
+        let y = usize::try_from(i64::from(pos.y()) - i64::from(min.y())).ok()?;
+        let z = usize::try_from(i64::from(pos.z()) - i64::from(min.z())).ok()?;
+        if x >= size_x || y >= size_y || z >= size_z {
+            return None;
+        }
+        Some((y * size_z + z) * size_x + x)
     }
 
     #[inline]
     fn cell_index(&self, pos: BlockPos) -> Option<usize> {
-        let x = usize::try_from(i64::from(pos.x()) - i64::from(self.min.x())).ok()?;
-        let y = usize::try_from(i64::from(pos.y()) - i64::from(self.min.y())).ok()?;
-        let z = usize::try_from(i64::from(pos.z()) - i64::from(self.min.z())).ok()?;
-        if x >= self.size_x || y >= self.size_y || z >= self.size_z {
-            return None;
-        }
-        Some((y * self.size_z + z) * self.size_x + x)
+        Self::cell_index_for(self.min, self.size_x, self.size_y, self.size_z, pos)
+    }
+
+    #[cfg(test)]
+    fn try_new(bounds: BlockRegionBounds) -> Option<StandaloneDenseExplosionBlockCache> {
+        let (min, size_x, size_y, size_z, _volume) = Self::try_dimensions(bounds)?;
+        Some(StandaloneDenseExplosionBlockCache {
+            min,
+            size_x,
+            size_y,
+            size_z,
+        })
     }
 }
 
-impl ExplosionRayBlockCache for DenseExplosionBlockCache {
+#[cfg(test)]
+impl StandaloneDenseExplosionBlockCache {
+    #[inline]
+    fn cell_index(&self, pos: BlockPos) -> Option<usize> {
+        DenseExplosionBlockCache::cell_index_for(
+            self.min,
+            self.size_x,
+            self.size_y,
+            self.size_z,
+            pos,
+        )
+    }
+}
+
+impl ExplosionRayBlockCache for DenseExplosionBlockCache<'_> {
     type Miss = usize;
 
     #[inline]
     fn lookup(&self, pos: BlockPos) -> Option<ExplosionBlockCacheLookup<Self::Miss>> {
         let slot_index = self.cell_index(pos)?;
-        let entry_index = self.slots[slot_index];
-        Some(if entry_index == EMPTY_DENSE_BLOCK_CACHE_SLOT {
-            ExplosionBlockCacheLookup::Miss(slot_index)
+        let slot = self.slots[slot_index];
+        Some(if slot.generation == self.generation {
+            ExplosionBlockCacheLookup::Hit(slot.entry_index as usize)
         } else {
-            ExplosionBlockCacheLookup::Hit(usize::from(entry_index))
+            ExplosionBlockCacheLookup::Miss(slot_index)
         })
     }
 
@@ -294,7 +388,10 @@ impl ExplosionRayBlockCache for DenseExplosionBlockCache {
             flags,
             _padding: 0,
         });
-        self.slots[slot_index] = entry_index as u16;
+        self.slots[slot_index] = DenseExplosionBlockCacheSlot {
+            generation: self.generation,
+            entry_index: entry_index as u32,
+        };
         entry_index
     }
 
@@ -541,17 +638,36 @@ impl<'a> ServerExplosion<'a> {
 
         if cache_policy.resistance
             && cache_policy.always_allows_block_explosion
-            && let Some(cache) = DenseExplosionBlockCache::try_new(bounds)
+            && let Some((min, size_x, size_y, size_z, volume)) =
+                DenseExplosionBlockCache::try_dimensions(bounds)
+            && let Some(result) = DENSE_CACHE_SCRATCHPAD
+                .try_with(|cell| {
+                    let mut scratchpad = cell.try_borrow_mut().ok()?;
+                    let generation = scratchpad.prepare(volume);
+                    let (slots, entries) = scratchpad.split_borrow_mut(volume);
+                    let cache = DenseExplosionBlockCache {
+                        min,
+                        size_x,
+                        size_y,
+                        size_z,
+                        generation,
+                        slots,
+                        entries,
+                    };
+                    Self::calculate_immutable_ray_powers_with_cache(
+                        powers,
+                        calculator,
+                        reader,
+                        context,
+                        cache_policy,
+                        cache,
+                        use_bounded_floor,
+                    )
+                })
+                .ok()
+                .flatten()
         {
-            return Self::calculate_immutable_ray_powers_with_cache(
-                powers,
-                calculator,
-                reader,
-                context,
-                cache_policy,
-                cache,
-                use_bounded_floor,
-            );
+            return Some(result);
         }
 
         Self::calculate_immutable_ray_powers_with_cache(
