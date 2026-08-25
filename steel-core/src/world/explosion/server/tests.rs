@@ -1378,6 +1378,9 @@ fn combined_explosion_drops_never_exceed_vanilla_stack_limit() {
 fn test_e2e_10000_tnt_detonation() {
     use std::time::Instant;
 
+    const TOTAL_TNT: usize = 10_000;
+    const BATCH_SIZE: usize = 1_000;
+
     init_vanilla_registry();
     init_behaviors();
     let world = fresh_test_world("e2e_10k_test");
@@ -1402,8 +1405,6 @@ fn test_e2e_10000_tnt_detonation() {
         }
     }
 
-    const TOTAL_TNT: usize = 10_000;
-    const BATCH_SIZE: usize = 1_000;
     let mut total_affected = 0;
 
     println!("\n=== Starting E2E 10,000 TNT Mass Detonation Test ===");
@@ -1426,24 +1427,20 @@ fn test_e2e_10000_tnt_detonation() {
         let completed = (batch + 1) * BATCH_SIZE;
         let throughput = BATCH_SIZE as f64 / batch_elapsed.as_secs_f64();
         println!(
-            "  Progress: {:>5}/10,000 TNT in {:>8.2?} ({:>7.1} explosions/sec, total affected blocks: {})",
-            completed, batch_elapsed, throughput, total_affected
+            "  Progress: {completed:>5}/10,000 TNT in {batch_elapsed:>8.2?} ({throughput:>7.1} explosions/sec, total affected blocks: {total_affected})"
         );
     }
 
     let total_elapsed = overall_start.elapsed();
     let avg_throughput = TOTAL_TNT as f64 / total_elapsed.as_secs_f64();
     let avg_latency = total_elapsed.as_secs_f64() * 1000.0 / TOTAL_TNT as f64;
+    let latency_us = avg_latency * 1000.0;
 
     println!("=== E2E 10,000 TNT Completed Successfully ===");
-    println!("  Total Time:       {:?}", total_elapsed);
-    println!("  Average Rate:     {:.1} explosions/sec", avg_throughput);
-    println!(
-        "  Average Latency:  {:.3} ms/explosion ({:.1} µs/explosion)",
-        avg_latency,
-        avg_latency * 1000.0
-    );
-    println!("  Affected Blocks:  {}", total_affected);
+    println!("  Total Time:       {total_elapsed:?}");
+    println!("  Average Rate:     {avg_throughput:.1} explosions/sec");
+    println!("  Average Latency:  {avg_latency:.3} ms/explosion ({latency_us:.1} µs/explosion)");
+    println!("  Affected Blocks:  {total_affected}");
     println!("=============================================\n");
 
     assert!(total_affected > 0);
