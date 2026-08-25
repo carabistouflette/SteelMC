@@ -379,6 +379,7 @@ impl StableAirOccupancy {
         }
     }
 
+    #[inline]
     fn box_is_clear(
         &self,
         min_x: usize,
@@ -401,11 +402,31 @@ impl StableAirOccupancy {
             (1_u16 << (max_x + 1)) - 1
         };
         let x_mask = below_max & (u16::MAX << min_x);
+        let mask_64 = u64::from(x_mask);
+        let x_mask_64 = mask_64 | (mask_64 << 16) | (mask_64 << 32) | (mask_64 << 48);
+
+        let z_count = max_z - min_z + 1;
         for y in min_y..=max_y {
-            for z in min_z..=max_z {
-                if rows[y * BlockPalette::SIZE + z] & x_mask != 0 {
+            let row_start = y * BlockPalette::SIZE + min_z;
+            let mut z_offset = 0;
+            while z_offset + 4 <= z_count {
+                // SAFETY: `row_start + z_offset + 4 <= 256` is strictly within bounds of `[u16; 256]`.
+                let word = unsafe {
+                    rows.as_ptr()
+                        .add(row_start + z_offset)
+                        .cast::<u64>()
+                        .read_unaligned()
+                };
+                if (word & x_mask_64) != 0 {
                     return false;
                 }
+                z_offset += 4;
+            }
+            while z_offset < z_count {
+                if rows[row_start + z_offset] & x_mask != 0 {
+                    return false;
+                }
+                z_offset += 1;
             }
         }
         true
