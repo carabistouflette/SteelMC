@@ -1416,10 +1416,23 @@ impl WorldEntityManager {
         aabb: &WorldAabb,
         mut predicate: impl FnMut(&dyn Entity) -> bool,
     ) -> Vec<SharedEntity> {
-        self.get_entities_in_aabb(aabb)
-            .into_iter()
-            .filter(|entity| predicate(entity.as_ref()))
-            .collect()
+        let state = self.state.read();
+        let mut result = Vec::new();
+        let _ = Self::visit_entity_query_entries(
+            &state,
+            aabb,
+            EntityCollisionCandidates::All,
+            |entry| {
+                if Self::is_accessible(&state, entry)
+                    && entry.bounding_box.intersects(*aabb)
+                    && predicate(entry.entity.as_ref())
+                {
+                    result.push(Arc::clone(&entry.entity));
+                }
+                ControlFlow::<()>::Continue(())
+            },
+        );
+        result
     }
 
     /// Returns whether any live entity intersects `aabb` and matches `predicate`.
@@ -1524,11 +1537,10 @@ impl WorldEntityManager {
         &self,
         aabb: &WorldAabb,
         origin: DVec3,
-        mut predicate: impl FnMut(&dyn Entity) -> bool,
+        predicate: impl FnMut(&dyn Entity) -> bool,
     ) -> Option<SharedEntity> {
-        self.get_entities_in_aabb(aabb)
+        self.get_entities_in_aabb_matching(aabb, predicate)
             .into_iter()
-            .filter(|entity| predicate(entity.as_ref()))
             .min_by(|first, second| {
                 first
                     .position()
@@ -1541,13 +1553,19 @@ impl WorldEntityManager {
     /// Gets live entities whose bounding boxes intersect `aabb`.
     pub fn get_entities_in_aabb(&self, aabb: &WorldAabb) -> Vec<SharedEntity> {
         let state = self.state.read();
-        Self::entity_query_entries(&state, aabb)
-            .into_iter()
-            .filter(|entry| {
-                Self::is_accessible(&state, entry) && entry.bounding_box.intersects(*aabb)
-            })
-            .map(|entry| Arc::clone(&entry.entity))
-            .collect()
+        let mut result = Vec::new();
+        let _ = Self::visit_entity_query_entries(
+            &state,
+            aabb,
+            EntityCollisionCandidates::All,
+            |entry| {
+                if Self::is_accessible(&state, entry) && entry.bounding_box.intersects(*aabb) {
+                    result.push(Arc::clone(&entry.entity));
+                }
+                ControlFlow::<()>::Continue(())
+            },
+        );
+        result
     }
 
     /// Gets all live entities visible to vanilla gameplay lookups.
