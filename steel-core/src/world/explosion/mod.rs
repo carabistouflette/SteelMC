@@ -522,3 +522,64 @@ fn default_block_particles() -> ExplosionParticlePalette {
     };
     palette
 }
+
+/// Internal benchmark support module for measuring explosion performance.
+#[cfg(feature = "benchmark-support")]
+pub mod benchmark_support {
+    use std::sync::Arc;
+
+    use glam::DVec3;
+    use steel_registry::{init_vanilla_registry, vanilla_blocks};
+    use steel_utils::types::UpdateFlags;
+    use steel_utils::{BlockPos, ChunkPos};
+
+    use crate::behavior::init_behaviors;
+    use crate::test_support::{fresh_test_world, insert_ready_full_chunk};
+    use crate::world::{ExplosionInteraction, ExplosionOptions, World};
+
+    /// Sets up a RAM-backed world loaded with chunks and terrain for explosion benchmarking.
+    pub fn setup_benchmark_world(key: &'static str) -> Arc<World> {
+        init_vanilla_registry();
+        init_behaviors();
+        let world = fresh_test_world(key);
+        for cx in -2..=2 {
+            for cz in -2..=2 {
+                insert_ready_full_chunk(&world, ChunkPos::new(cx, cz));
+            }
+        }
+        let stone = vanilla_blocks::STONE.default_state();
+        for x in -16..=16 {
+            for y in 48..=80 {
+                for z in -16..=16 {
+                    if y <= 64 {
+                        world.set_block(
+                            BlockPos::new(x, y, z),
+                            stone,
+                            UpdateFlags::UPDATE_NONE | UpdateFlags::UPDATE_SKIP_ON_PLACE,
+                        );
+                    }
+                }
+            }
+        }
+        world
+    }
+
+    /// Executes a single radius 4 explosion.
+    pub fn run_single_explosion(world: &Arc<World>, center: DVec3) -> usize {
+        let options = ExplosionOptions::new(center, 4.0, ExplosionInteraction::Tnt);
+        world.explode(options).affected_block_count
+    }
+
+    /// Executes a batch of sequential explosions for mass detonation benchmarking.
+    pub fn run_mass_detonation(world: &Arc<World>, count: usize) -> usize {
+        let mut total = 0;
+        for i in 0..count {
+            let ox = (i % 10) as f64 - 5.0;
+            let oz = (i / 10) as f64 - 5.0;
+            let center = DVec3::new(ox + 0.5, 64.5, oz + 0.5);
+            let options = ExplosionOptions::new(center, 4.0, ExplosionInteraction::Tnt);
+            total += world.explode(options).affected_block_count;
+        }
+        total
+    }
+}

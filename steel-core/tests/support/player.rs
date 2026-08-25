@@ -68,7 +68,7 @@ impl TestPlayerBuilder {
         }
     }
 
-    pub(crate) fn uuid(mut self, uuid: Uuid) -> Self {
+    pub(crate) const fn uuid(mut self, uuid: Uuid) -> Self {
         self.profile.id = uuid;
         self
     }
