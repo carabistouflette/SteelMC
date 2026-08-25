@@ -725,24 +725,40 @@ impl<'a> ServerExplosion<'a> {
         cache_policy: ImmutableRayCachePolicy,
         mut cache: C,
     ) -> Option<Vec<BlockPos>> {
-        let mut affected = JavaBlockPosSet::default();
-        for (&step, &initial_power) in RAY_STEPS.iter().zip(powers) {
-            if !visit_immutable_ray_positions_cached::<R, C, USE_BOUNDED_FLOOR>(
-                ExplosionRay {
-                    step,
-                    initial_power,
-                },
-                context,
-                reader,
-                calculator,
-                cache_policy,
-                &mut cache,
-                &mut affected,
-            ) {
-                return None;
+        let mut collect = |affected: &mut JavaBlockPosSet| -> Option<Vec<BlockPos>> {
+            for (&step, &initial_power) in RAY_STEPS.iter().zip(powers) {
+                if !visit_immutable_ray_positions_cached::<R, C, USE_BOUNDED_FLOOR>(
+                    ExplosionRay {
+                        step,
+                        initial_power,
+                    },
+                    context,
+                    reader,
+                    calculator,
+                    cache_policy,
+                    &mut cache,
+                    affected,
+                ) {
+                    return None;
+                }
             }
+            let mut result = Vec::with_capacity(affected.entries.len());
+            affected.collect_into(&mut result);
+            Some(result)
+        };
+
+        if let Ok(scratchpad) = JAVA_BLOCK_POS_SET_SCRATCHPAD.try_with(|cell| {
+            cell.try_borrow_mut().map(|mut set| {
+                set.clear();
+                collect(&mut set)
+            })
+        }) && let Ok(result) = scratchpad
+        {
+            return result;
         }
-        Some(affected.into_iter().collect())
+
+        let mut affected = JavaBlockPosSet::default();
+        collect(&mut affected)
     }
 
     fn calculate_immutable_ray_powers_uncached_with_reader<R: ExplosionBlockReader>(
@@ -755,22 +771,38 @@ impl<'a> ServerExplosion<'a> {
             center: self.center,
             bounds: ExplosionWorldBounds::from_world(self.world),
         };
-        let mut affected = JavaBlockPosSet::default();
-        for (&step, &initial_power) in RAY_STEPS.iter().zip(powers) {
-            visit_immutable_ray_positions(
-                ExplosionRay {
-                    step,
-                    initial_power,
-                },
-                context,
-                reader,
-                calculator,
-                |pos| {
-                    affected.insert(pos);
-                },
-            );
+        let collect = |affected: &mut JavaBlockPosSet| -> Vec<BlockPos> {
+            for (&step, &initial_power) in RAY_STEPS.iter().zip(powers) {
+                visit_immutable_ray_positions(
+                    ExplosionRay {
+                        step,
+                        initial_power,
+                    },
+                    context,
+                    reader,
+                    calculator,
+                    |pos| {
+                        affected.insert(pos);
+                    },
+                );
+            }
+            let mut result = Vec::with_capacity(affected.entries.len());
+            affected.collect_into(&mut result);
+            result
+        };
+
+        if let Ok(scratchpad) = JAVA_BLOCK_POS_SET_SCRATCHPAD.try_with(|cell| {
+            cell.try_borrow_mut().map(|mut set| {
+                set.clear();
+                collect(&mut set)
+            })
+        }) && let Ok(result) = scratchpad
+        {
+            return result;
         }
-        affected.into_iter().collect()
+
+        let mut affected = JavaBlockPosSet::default();
+        collect(&mut affected)
     }
 
     fn immutable_ray_region_bounds(&self, read_radius: u32) -> Option<BlockRegionBounds> {
@@ -795,45 +827,61 @@ impl<'a> ServerExplosion<'a> {
         &self,
         mut next_float: impl FnMut() -> f32,
     ) -> Vec<BlockPos> {
-        let mut affected = JavaBlockPosSet::default();
         let bounds = ExplosionWorldBounds::from_world(self.world);
+        let collect = |affected: &mut JavaBlockPosSet,
+                       next_float: &mut dyn FnMut() -> f32|
+         -> Vec<BlockPos> {
+            for &step in RAY_STEPS.iter() {
+                let mut remaining_power = initial_ray_power(self.radius, next_float());
+                let mut ray_pos = self.center;
+                while remaining_power > 0.0 {
+                    let pos = BlockPos::from(ray_pos);
+                    let state = self.world.get_block_state(pos);
+                    let fluid = state.get_fluid_state();
+                    if !bounds.contains(pos) {
+                        break;
+                    }
 
-        for &step in RAY_STEPS.iter() {
-            let mut remaining_power = initial_ray_power(self.radius, next_float());
-            let mut ray_pos = self.center;
-            while remaining_power > 0.0 {
-                let pos = BlockPos::from(ray_pos);
-                let state = self.world.get_block_state(pos);
-                let fluid = state.get_fluid_state();
-                if !bounds.contains(pos) {
-                    break;
+                    if let Some(resistance) = self
+                        .damage_calculator
+                        .block_explosion_resistance(self, self.world, pos, state, fluid)
+                    {
+                        remaining_power -= ray_power_loss_from_resistance(resistance);
+                    }
+
+                    if remaining_power > 0.0
+                        && self.damage_calculator.should_block_explode(
+                            self,
+                            self.world,
+                            pos,
+                            state,
+                            remaining_power,
+                        )
+                    {
+                        affected.insert(pos);
+                    }
+
+                    ray_pos += step;
+                    remaining_power -= RAY_POWER_DECAY;
                 }
-
-                if let Some(resistance) = self
-                    .damage_calculator
-                    .block_explosion_resistance(self, self.world, pos, state, fluid)
-                {
-                    remaining_power -= ray_power_loss_from_resistance(resistance);
-                }
-
-                if remaining_power > 0.0
-                    && self.damage_calculator.should_block_explode(
-                        self,
-                        self.world,
-                        pos,
-                        state,
-                        remaining_power,
-                    )
-                {
-                    affected.insert(pos);
-                }
-
-                ray_pos += step;
-                remaining_power -= RAY_POWER_DECAY;
             }
+            let mut result = Vec::with_capacity(affected.entries.len());
+            affected.collect_into(&mut result);
+            result
+        };
+
+        if let Ok(scratchpad) = JAVA_BLOCK_POS_SET_SCRATCHPAD.try_with(|cell| {
+            cell.try_borrow_mut().map(|mut set| {
+                set.clear();
+                collect(&mut set, &mut next_float)
+            })
+        }) && let Ok(result) = scratchpad
+        {
+            return result;
         }
 
-        affected.into_iter().collect()
+        let mut affected = JavaBlockPosSet::default();
+        collect(&mut affected, &mut next_float)
     }
 
     fn draw_immutable_ray_powers(&self, mut next_float: impl FnMut() -> f32) -> [f32; RAY_COUNT] {
@@ -1199,6 +1247,11 @@ const fn explosion_block_cache_index(tag: i64) -> usize {
     (mixed as usize) & BLOCK_CACHE_MASK
 }
 
+thread_local! {
+    static JAVA_BLOCK_POS_SET_SCRATCHPAD: RefCell<JavaBlockPosSet> =
+        const { RefCell::new(JavaBlockPosSet::new()) };
+}
+
 #[derive(Default)]
 struct JavaBlockPosSet {
     buckets: Vec<JavaBlockPosBucket>,
@@ -1218,24 +1271,46 @@ impl JavaBlockPosBucket {
     };
 }
 
+#[derive(Clone, Copy)]
 struct JavaBlockPosEntry {
     pos: BlockPos,
+    hash: u32,
     next: u32,
 }
 
 impl JavaBlockPosSet {
-    fn insert(&mut self, pos: BlockPos) -> bool {
-        if self.buckets.is_empty() {
-            self.buckets.resize(16, JavaBlockPosBucket::EMPTY);
-            self.entries.reserve(16);
+    const DEFAULT_CAPACITY: usize = 16;
+
+    const fn new() -> Self {
+        Self {
+            buckets: Vec::new(),
+            entries: Vec::new(),
         }
-        let index = java_block_pos_bucket(pos, self.buckets.len());
+    }
+
+    fn clear(&mut self) {
+        self.buckets.fill(JavaBlockPosBucket::EMPTY);
+        self.entries.clear();
+    }
+
+    fn ensure_initialized(&mut self) {
+        if self.buckets.is_empty() {
+            self.buckets
+                .resize(Self::DEFAULT_CAPACITY, JavaBlockPosBucket::EMPTY);
+            self.entries.reserve(Self::DEFAULT_CAPACITY);
+        }
+    }
+
+    fn insert(&mut self, pos: BlockPos) -> bool {
+        self.ensure_initialized();
+        let spread_hash = java_block_pos_hash(pos);
+        let index = java_block_pos_bucket(spread_hash, self.buckets.len());
         let bucket = self.buckets[index];
         let mut current = bucket.head;
         let mut bin_len = 0;
         while current != JAVA_BLOCK_POS_SET_EMPTY_INDEX {
             let entry = &self.entries[current as usize];
-            if entry.pos == pos {
+            if entry.hash == spread_hash && entry.pos == pos {
                 return false;
             }
             current = entry.next;
@@ -1251,6 +1326,7 @@ impl JavaBlockPosSet {
         );
         self.entries.push(JavaBlockPosEntry {
             pos,
+            hash: spread_hash,
             next: JAVA_BLOCK_POS_SET_EMPTY_INDEX,
         });
         if bucket.tail == JAVA_BLOCK_POS_SET_EMPTY_INDEX {
@@ -1265,16 +1341,11 @@ impl JavaBlockPosSet {
 
         // HashMap attempts to treeify after adding a ninth entry to one bin, but grows the
         // table instead while its capacity is below 64. That split changes iteration order.
-        if self.buckets.len() < JAVA_HASH_MAP_MIN_TREEIFY_CAPACITY
-            && bin_len >= JAVA_HASH_MAP_TREEIFY_THRESHOLD
-        {
-            self.resize();
-        }
-        // Steel intentionally keeps list bins at larger capacities. HashMap tree-bin order can
-        // depend on JVM identity hashes and is not a reproducible Vanilla ordering contract.
-        if self.entries.len()
-            > self.buckets.len() * JAVA_HASH_MAP_LOAD_FACTOR_NUMERATOR
-                / JAVA_HASH_MAP_LOAD_FACTOR_DENOMINATOR
+        if (self.buckets.len() < JAVA_HASH_MAP_MIN_TREEIFY_CAPACITY
+            && bin_len >= JAVA_HASH_MAP_TREEIFY_THRESHOLD)
+            || self.entries.len()
+                > self.buckets.len() * JAVA_HASH_MAP_LOAD_FACTOR_NUMERATOR
+                    / JAVA_HASH_MAP_LOAD_FACTOR_DENOMINATOR
         {
             self.resize();
         }
@@ -1282,30 +1353,61 @@ impl JavaBlockPosSet {
     }
 
     fn resize(&mut self) {
-        let new_capacity = self.buckets.len().saturating_mul(2);
-        if new_capacity == self.buckets.len() {
+        let old_capacity = self.buckets.len();
+        let new_capacity = old_capacity.saturating_mul(2);
+        if new_capacity == old_capacity {
             return;
         }
-        let resized = vec![JavaBlockPosBucket::EMPTY; new_capacity];
-        let old_buckets = mem::replace(&mut self.buckets, resized);
-        for bucket in old_buckets {
-            let mut current = bucket.head;
+        self.buckets.resize(new_capacity, JavaBlockPosBucket::EMPTY);
+        for j in 0..old_capacity {
+            let mut current = self.buckets[j].head;
+            if current == JAVA_BLOCK_POS_SET_EMPTY_INDEX {
+                continue;
+            }
+            let mut lo_head = JAVA_BLOCK_POS_SET_EMPTY_INDEX;
+            let mut lo_tail = JAVA_BLOCK_POS_SET_EMPTY_INDEX;
+            let mut hi_head = JAVA_BLOCK_POS_SET_EMPTY_INDEX;
+            let mut hi_tail = JAVA_BLOCK_POS_SET_EMPTY_INDEX;
             while current != JAVA_BLOCK_POS_SET_EMPTY_INDEX {
                 let entry_index = current as usize;
                 let next = self.entries[entry_index].next;
-                let index = java_block_pos_bucket(self.entries[entry_index].pos, new_capacity);
-                let new_bucket = self.buckets[index];
                 self.entries[entry_index].next = JAVA_BLOCK_POS_SET_EMPTY_INDEX;
-                if new_bucket.tail == JAVA_BLOCK_POS_SET_EMPTY_INDEX {
-                    self.buckets[index] = JavaBlockPosBucket {
-                        head: current,
-                        tail: current,
-                    };
+                if (self.entries[entry_index].hash as usize & old_capacity) == 0 {
+                    if lo_tail == JAVA_BLOCK_POS_SET_EMPTY_INDEX {
+                        lo_head = current;
+                    } else {
+                        self.entries[lo_tail as usize].next = current;
+                    }
+                    lo_tail = current;
                 } else {
-                    self.entries[new_bucket.tail as usize].next = current;
-                    self.buckets[index].tail = current;
+                    if hi_tail == JAVA_BLOCK_POS_SET_EMPTY_INDEX {
+                        hi_head = current;
+                    } else {
+                        self.entries[hi_tail as usize].next = current;
+                    }
+                    hi_tail = current;
                 }
                 current = next;
+            }
+            self.buckets[j] = JavaBlockPosBucket {
+                head: lo_head,
+                tail: lo_tail,
+            };
+            self.buckets[j + old_capacity] = JavaBlockPosBucket {
+                head: hi_head,
+                tail: hi_tail,
+            };
+        }
+    }
+
+    fn collect_into(&self, output: &mut Vec<BlockPos>) {
+        output.reserve(self.entries.len());
+        for bucket in &self.buckets {
+            let mut current = bucket.head;
+            while current != JAVA_BLOCK_POS_SET_EMPTY_INDEX {
+                let entry = &self.entries[current as usize];
+                output.push(entry.pos);
+                current = entry.next;
             }
         }
     }
@@ -1317,28 +1419,26 @@ impl IntoIterator for JavaBlockPosSet {
 
     fn into_iter(self) -> Self::IntoIter {
         let mut ordered = Vec::with_capacity(self.entries.len());
-        for bucket in self.buckets {
-            let mut current = bucket.head;
-            while current != JAVA_BLOCK_POS_SET_EMPTY_INDEX {
-                let entry = &self.entries[current as usize];
-                ordered.push(entry.pos);
-                current = entry.next;
-            }
-        }
+        self.collect_into(&mut ordered);
         ordered.into_iter()
     }
 }
 
 const JAVA_BLOCK_POS_SET_EMPTY_INDEX: u32 = u32::MAX;
 
-const fn java_block_pos_bucket(pos: BlockPos, capacity: usize) -> usize {
+#[inline]
+const fn java_block_pos_hash(pos: BlockPos) -> u32 {
     let hash = pos
         .y()
         .wrapping_add(pos.z().wrapping_mul(JAVA_BLOCK_POS_HASH_MULTIPLIER))
         .wrapping_mul(JAVA_BLOCK_POS_HASH_MULTIPLIER)
         .wrapping_add(pos.x()) as u32;
-    let spread = hash ^ (hash >> JAVA_HASH_MAP_SPREAD_SHIFT);
-    spread as usize & (capacity - 1)
+    hash ^ (hash >> JAVA_HASH_MAP_SPREAD_SHIFT)
+}
+
+#[inline]
+const fn java_block_pos_bucket(hash: u32, capacity: usize) -> usize {
+    (hash as usize) & (capacity - 1)
 }
 
 fn visit_immutable_ray_positions<R: ExplosionBlockReader>(
