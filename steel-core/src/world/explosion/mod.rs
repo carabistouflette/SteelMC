@@ -529,13 +529,16 @@ pub mod benchmark_support {
     use std::sync::Arc;
 
     use glam::DVec3;
-    use steel_registry::{init_vanilla_registry, vanilla_blocks};
+    use steel_registry::{init_vanilla_registry, vanilla_blocks, vanilla_entities};
     use steel_utils::types::UpdateFlags;
     use steel_utils::{BlockPos, ChunkPos};
 
     use crate::behavior::init_behaviors;
     use crate::test_support::{fresh_test_world, insert_ready_full_chunk};
     use crate::world::{ExplosionInteraction, ExplosionOptions, World};
+
+    use crate::entity::entities::PrimedTntEntity;
+    use crate::entity::{Entity as _, next_entity_id};
 
     /// Sets up a RAM-backed world loaded with chunks and terrain for explosion benchmarking.
     pub fn setup_benchmark_world(key: &'static str) -> Arc<World> {
@@ -607,6 +610,44 @@ pub mod benchmark_support {
                     .stable_air_box_is_clear(min_x, max_x, min_y, max_y, min_z, max_z)
             })
             .unwrap_or(false)
+    }
+
+    /// Spawns `count` primed TNT entities resting stationary on the benchmark floor.
+    pub fn spawn_stationary_tnt(world: &Arc<World>, count: usize) -> Vec<Arc<PrimedTntEntity>> {
+        let mut entities = Vec::with_capacity(count);
+        for i in 0..count {
+            let ox = f64::from((i % 50) as i32) * 0.64 - 16.0;
+            let oz = f64::from((i / 50) as i32) * 0.64 - 12.8;
+            let entity = PrimedTntEntity::new(
+                &vanilla_entities::TNT,
+                next_entity_id(),
+                DVec3::new(ox, 65.0, oz),
+                Arc::downgrade(world),
+            );
+            entity.set_on_ground(true);
+            entities.push(Arc::new(entity));
+        }
+        entities
+    }
+
+    /// Ticks stationary primed TNT entities, refreshing fuses so nothing detonates mid-run.
+    pub fn tick_stationary_tnt(
+        entities: &[Arc<PrimedTntEntity>],
+        ticks_per_iteration: usize,
+    ) -> usize {
+        const FUSE_RESET_THRESHOLD: i32 = 10;
+
+        let mut total_ticks = 0;
+        for _ in 0..ticks_per_iteration {
+            for entity in entities {
+                if entity.fuse() < FUSE_RESET_THRESHOLD {
+                    entity.set_fuse(PrimedTntEntity::DEFAULT_FUSE_TIME);
+                }
+                entity.tick();
+                total_ticks += 1;
+            }
+        }
+        total_ticks
     }
 
     /// Executes a real-world E2E chain reaction of N explosions where each detonation
