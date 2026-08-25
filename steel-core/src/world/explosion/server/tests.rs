@@ -1438,7 +1438,11 @@ fn test_e2e_10000_tnt_detonation() {
     println!("=== E2E 10,000 TNT Completed Successfully ===");
     println!("  Total Time:       {:?}", total_elapsed);
     println!("  Average Rate:     {:.1} explosions/sec", avg_throughput);
-    println!("  Average Latency:  {:.3} ms/explosion ({:.1} µs/explosion)", avg_latency, avg_latency * 1000.0);
+    println!(
+        "  Average Latency:  {:.3} ms/explosion ({:.1} µs/explosion)",
+        avg_latency,
+        avg_latency * 1000.0
+    );
     println!("  Affected Blocks:  {}", total_affected);
     println!("=============================================\n");
 
