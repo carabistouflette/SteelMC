@@ -1,32 +1,36 @@
 # https://github.com/bevyengine/bevy/blob/main/.cargo/config_fast_builds.toml for more details
 
 [build]
-rustflags = ["-Zthreads=0"]
+rustflags = ["-Zthreads=0", "-C", "force-frame-pointers=yes"]
 # TODO: remove once nightly ICE with incremental cache is fixed
 #incremental = false
 
+[target.'cfg(all())']
+rustflags = [
+    "-C", "force-frame-pointers=yes",
+]
+
 [target.x86_64-unknown-linux-gnu]
-rustflags = ["-Clink-arg=-fuse-ld=lld", "-Zthreads=0"]
+rustflags = ["-Clink-arg=-fuse-ld=lld", "-Zthreads=0", "-C", "force-frame-pointers=yes"]
 
 [target.aarch64-unknown-linux-gnu]
-rustflags = ["-Clink-arg=-fuse-ld=lld", "-Zthreads=0"]
-
+rustflags = ["-Clink-arg=-fuse-ld=lld", "-Zthreads=0", "-C", "force-frame-pointers=yes"]
 [alias]
 build-native = [
   "build",
   "--config",
-  "build.rustflags=[\"-Zthreads=0\",\"-C\",\"target-cpu=native\"]",
+  "build.rustflags=[\"-Zthreads=0\",\"-C\",\"target-cpu=native\",\"-C\",\"force-frame-pointers=yes\"]",
   "--config",
-  "target.x86_64-unknown-linux-gnu.rustflags=[\"-Clink-arg=-fuse-ld=lld\",\"-Zthreads=0\",\"-C\",\"target-cpu=native\"]",
+  "target.x86_64-unknown-linux-gnu.rustflags=[\"-Clink-arg=-fuse-ld=lld\",\"-Zthreads=0\",\"-C\",\"target-cpu=native\",\"-C\",\"force-frame-pointers=yes\"]",
   "--config",
-  "target.aarch64-unknown-linux-gnu.rustflags=[\"-Clink-arg=-fuse-ld=lld\",\"-Zthreads=0\",\"-C\",\"target-cpu=native\"]",
+  "target.aarch64-unknown-linux-gnu.rustflags=[\"-Clink-arg=-fuse-ld=lld\",\"-Zthreads=0\",\"-C\",\"target-cpu=native\",\"-C\",\"force-frame-pointers=yes\"]",
 ]
 run-native = [
   "run",
   "--config",
-  "build.rustflags=[\"-Zthreads=0\",\"-C\",\"target-cpu=native\"]",
+  "build.rustflags=[\"-Zthreads=0\",\"-C\",\"target-cpu=native\",\"-C\",\"force-frame-pointers=yes\"]",
   "--config",
-  "target.x86_64-unknown-linux-gnu.rustflags=[\"-Clink-arg=-fuse-ld=lld\",\"-Zthreads=0\",\"-C\",\"target-cpu=native\"]",
+  "target.x86_64-unknown-linux-gnu.rustflags=[\"-Clink-arg=-fuse-ld=lld\",\"-Zthreads=0\",\"-C\",\"target-cpu=native\",\"-C\",\"force-frame-pointers=yes\"]",
   "--config",
-  "target.aarch64-unknown-linux-gnu.rustflags=[\"-Clink-arg=-fuse-ld=lld\",\"-Zthreads=0\",\"-C\",\"target-cpu=native\"]",
+  "target.aarch64-unknown-linux-gnu.rustflags=[\"-Clink-arg=-fuse-ld=lld\",\"-Zthreads=0\",\"-C\",\"target-cpu=native\",\"-C\",\"force-frame-pointers=yes\"]",
 ]

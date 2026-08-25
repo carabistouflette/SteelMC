@@ -43,6 +43,10 @@ criterion.workspace = true
 name = "jigsaw_assembly"
 harness = false
 
+[[bench]]
+name = "noise"
+harness = false
+
 [lints]
 workspace = true
 
