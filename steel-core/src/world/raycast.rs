@@ -198,19 +198,19 @@ impl ExplosionExposureClearGrid {
         Some((y * bounds.size_z + z) * bounds.size_x + x)
     }
 
+    #[inline]
     const fn state(&self, index: usize) -> ExplosionExposureClearGridState {
-        let word = index / EXPLOSION_EXPOSURE_CLEAR_GRID_STATES_PER_WORD;
-        let shift = (index % EXPLOSION_EXPOSURE_CLEAR_GRID_STATES_PER_WORD)
-            * EXPLOSION_EXPOSURE_CLEAR_GRID_STATE_BITS;
+        let word = index >> 5;
+        let shift = (index & 31) << 1;
         let encoded = (self.states[word] >> shift) & EXPLOSION_EXPOSURE_CLEAR_GRID_STATE_MASK;
         ExplosionExposureClearGridState::from_encoded(encoded)
     }
 
+    #[inline]
     fn record(&mut self, index: usize, state: ExplosionExposureClearGridState) {
         debug_assert_ne!(state, ExplosionExposureClearGridState::Unresolved);
-        let word = index / EXPLOSION_EXPOSURE_CLEAR_GRID_STATES_PER_WORD;
-        let shift = (index % EXPLOSION_EXPOSURE_CLEAR_GRID_STATES_PER_WORD)
-            * EXPLOSION_EXPOSURE_CLEAR_GRID_STATE_BITS;
+        let word = index >> 5;
+        let shift = (index & 31) << 1;
         let mask = EXPLOSION_EXPOSURE_CLEAR_GRID_STATE_MASK << shift;
         let value = (state as u64) << shift;
         self.states[word] = (self.states[word] & !mask) | value;
