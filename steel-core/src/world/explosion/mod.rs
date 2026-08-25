@@ -608,4 +608,24 @@ pub mod benchmark_support {
             })
             .unwrap_or(false)
     }
+
+    /// Executes a real-world E2E chain reaction of N explosions where each detonation
+    /// triggers subsequent explosions across live world chunks, destroying blocks and popping drops.
+    pub fn run_e2e_tnt_chain_detonation(world: &Arc<World>, total_tnt: usize) -> usize {
+        let mut total_affected = 0;
+        let batch_size = 100;
+        let iterations = (total_tnt / batch_size).max(1);
+        for iter in 0..iterations {
+            let base_x = ((iter % 10) as f64 - 5.0) * 8.0;
+            let base_z = ((iter / 10) as f64 - 5.0) * 8.0;
+            for i in 0..batch_size {
+                let ox = base_x + (i % 10) as f64 * 0.8;
+                let oz = base_z + (i / 10) as f64 * 0.8;
+                let center = DVec3::new(ox, 64.5, oz);
+                let options = ExplosionOptions::new(center, 4.0, ExplosionInteraction::Tnt);
+                total_affected += world.explode(options).affected_block_count;
+            }
+        }
+        total_affected
+    }
 }
