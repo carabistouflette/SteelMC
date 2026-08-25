@@ -306,19 +306,33 @@ impl Entity for PrimedTntEntity {
 
     fn tick(&self) {
         self.handle_portal();
-        self.apply_gravity();
-        self.move_entity(MoverType::SelfMovement, self.velocity());
-        self.apply_effects_from_blocks();
-        let mut velocity = self.velocity() * f64::from(AIR_DRAG);
-        if self.on_ground() {
-            velocity = DVec3::new(
-                velocity.x * GROUND_HORIZONTAL_DRAG,
-                velocity.y * GROUND_VERTICAL_BOUNCE,
-                velocity.z * GROUND_HORIZONTAL_DRAG,
-            );
-        }
-        self.set_velocity(velocity);
+        let velocity = self.velocity();
+        let is_stationary_on_ground = self.on_ground()
+            && velocity.x.abs() < 1e-6
+            && velocity.z.abs() < 1e-6
+            && velocity.y.abs() < 1e-6;
 
+        if is_stationary_on_ground
+            && let Some(world) = self.level()
+            && let pos = BlockPos::from(self.position())
+            && world.get_block_state(pos.below()).is_solid_render()
+        {
+            self.set_velocity(DVec3::ZERO);
+            self.apply_effects_from_blocks();
+        } else {
+            self.apply_gravity();
+            self.move_entity(MoverType::SelfMovement, self.velocity());
+            self.apply_effects_from_blocks();
+            let mut velocity = self.velocity() * f64::from(AIR_DRAG);
+            if self.on_ground() {
+                velocity = DVec3::new(
+                    velocity.x * GROUND_HORIZONTAL_DRAG,
+                    velocity.y * GROUND_VERTICAL_BOUNCE,
+                    velocity.z * GROUND_HORIZONTAL_DRAG,
+                );
+            }
+            self.set_velocity(velocity);
+        }
         let fuse = self.decrement_fuse();
         if fuse <= 0 {
             let world = self.level();
