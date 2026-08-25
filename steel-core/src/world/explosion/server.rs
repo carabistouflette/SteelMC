@@ -68,7 +68,6 @@ const MAX_DENSE_BLOCK_CACHE_CELLS: usize = 8_192;
 const EMPTY_DENSE_BLOCK_CACHE_SLOT: u16 = u16::MAX;
 const DENSE_BLOCK_CACHE_HAS_RESISTANCE: u8 = 1;
 const DENSE_BLOCK_CACHE_AFFECTED: u8 = 1 << 1;
-const F64_INTEGER_MANTISSA_BIAS: f64 = 6_755_399_441_055_744.0;
 const DENSE_BLOCK_CACHE_ENTRY_SIZE_BYTES: usize = 8;
 const LONG_HASH_PHI: u64 = 0x9e37_79b9_7f4a_7c15;
 const JAVA_HASH_MAP_TREEIFY_THRESHOLD: usize = 8;
@@ -291,7 +290,6 @@ impl DenseExplosionBlockCache<'_> {
 
         Some((min, size_x, size_y, size_z, volume))
     }
-
     #[inline]
     fn cell_index_for(
         min: BlockPos,
@@ -342,7 +340,6 @@ impl StandaloneDenseExplosionBlockCache {
 
 impl ExplosionRayBlockCache for DenseExplosionBlockCache<'_> {
     type Miss = usize;
-
     #[inline]
     fn lookup(&self, pos: BlockPos) -> Option<ExplosionBlockCacheLookup<Self::Miss>> {
         let slot_index = self.cell_index(pos)?;
@@ -1089,6 +1086,7 @@ fn initial_ray_power(radius: f32, random: f32) -> f32 {
     radius * (INITIAL_RAY_POWER_BASE + random * INITIAL_RAY_POWER_RANDOM_SCALE)
 }
 
+#[inline]
 fn ray_power_loss_from_resistance(resistance: f32) -> f32 {
     (resistance + RESISTANCE_POWER_OFFSET) * RESISTANCE_POWER_SCALE
 }
@@ -1227,18 +1225,16 @@ fn ray_block_pos<const USE_BOUNDED_FLOOR: bool>(position: DVec3) -> BlockPos {
     }
 }
 
-/// Floors a finite in-range coordinate without Rust's saturating float-to-int conversion.
-///
-/// Adding `1.5 * 2^52` maps every integral binary64 value in the i32 range exactly into the
-/// mantissa; its low 32 bits are the integer's two's-complement representation.
+/// Floors a finite in-range coordinate using direct truncation without branch overhead.
 #[inline]
 fn bounded_floor_to_i32(value: f64) -> i32 {
     debug_assert!(
         value.is_finite() && value >= f64::from(i32::MIN) && value < f64::from(i32::MAX) + 1.0
     );
-    ((value.floor() + F64_INTEGER_MANTISSA_BIAS).to_bits() as u32) as i32
+    // SAFETY: caller guarantees through `can_use_bounded_floor` that `value` is finite
+    // and within `i32::MIN..=i32::MAX` domain, so the conversion cannot overflow or be NaN.
+    unsafe { value.floor().to_int_unchecked::<i32>() }
 }
-
 #[inline]
 const fn explosion_block_cache_index(tag: i64) -> usize {
     let mut mixed = (tag as u64).wrapping_mul(LONG_HASH_PHI);
