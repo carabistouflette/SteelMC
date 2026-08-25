@@ -9,10 +9,16 @@ use steel_core::chunk::paletted_container::PalettedContainer;
 use steel_core::entity::{
     Entity, EntityBase, EntityOwnership, EntityVisibility, SharedEntity, WorldEntityManager,
 };
+use steel_core::level_data::WorldGenerationSettings;
+use steel_core::physics::collision::{CollisionWorld, WorldCollisionProvider};
+use steel_core::world::{World, WorldConfig, WorldStorageConfig};
 use steel_registry::entity_type::EntityTypeRef;
-use steel_registry::vanilla_entities;
+use steel_registry::vanilla_dimension_types;
+use steel_registry::{vanilla_blocks, vanilla_entities};
 use steel_utils::downcast::{DowncastType, DowncastTypeKey};
-use steel_utils::{BlockStateId, ChunkPos, WorldAabb};
+use steel_utils::types::UpdateFlags;
+use steel_utils::{BlockPos, BlockStateId, ChunkPos, Identifier, WorldAabb};
+use toml::map::Map;
 use uuid::Uuid;
 
 struct BenchEntity {
@@ -251,10 +257,115 @@ fn bench_paletted_container_write(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_block_collision(c: &mut Criterion) {
+    init_globals_once();
+    let mut group = c.benchmark_group("block_collision");
+
+    let runtime = Arc::new(
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .expect("bench runtime"),
+    );
+    let generation_pool = Arc::new(
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(1)
+            .build()
+            .expect("bench rayon pool"),
+    );
+    let world_config = WorldConfig {
+        storage: WorldStorageConfig::RamOnly,
+        level_data_path: None,
+        generator: Arc::new(steel_core::worldgen::ChunkGeneratorType::Empty(
+            steel_core::worldgen::EmptyChunkGenerator::new(),
+        )),
+        generation_settings: WorldGenerationSettings::from_generator_config(
+            Identifier::vanilla_static("empty"),
+            &toml::Value::Table(Map::new()),
+            Identifier::vanilla_static("overworld"),
+            -64,
+            384,
+        ),
+        view_distance: 8,
+        simulation_distance: 8,
+        max_chained_neighbor_updates: 1_000_000,
+        compression: None,
+        is_flat: false,
+        sea_level: 63,
+        default_gamemode: steel_utils::types::GameType::Survival,
+        difficulty: steel_utils::types::Difficulty::Normal,
+    };
+    let world = runtime
+        .block_on(World::new_with_config(
+            runtime.clone(),
+            Identifier::vanilla_static("bench_collision"),
+            &vanilla_dimension_types::OVERWORLD,
+            12345,
+            world_config,
+            generation_pool,
+        ))
+        .expect("bench world");
+
+    let proto = steel_core::chunk::Chunk::new(
+        steel_core::chunk::section::Sections::from_owned(
+            (0..24)
+                .map(|_| steel_core::chunk::section::ChunkSection::new_empty())
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+        ),
+        ChunkPos::new(0, 0),
+        -64,
+        384,
+        Arc::downgrade(&world),
+    );
+    let holder = Arc::new(steel_core::chunk::chunk_holder::ChunkHolder::new(
+        ChunkPos::new(0, 0),
+        ChunkTicketLevel::STRONGEST,
+        None,
+        -64,
+        384,
+    ));
+    holder.insert_chunk(proto, steel_core::chunk::status::ChunkStatus::Empty);
+    world
+        .chunk_map
+        .insert_benchmark_chunk_holder(ChunkPos::new(0, 0), holder);
+    for y in 60..76 {
+        for z in 0..16 {
+            for x in 0..16 {
+                let _ = world.set_block(
+                    BlockPos::new(x, y, z),
+                    vanilla_blocks::STONE.default_state(),
+                    UpdateFlags::UPDATE_NONE,
+                );
+            }
+        }
+    }
+    let provider = WorldCollisionProvider::new(&world);
+    let player_aabb = WorldAabb::new(2.1, 64.0, 2.1, 2.7, 65.8, 2.7);
+
+    group.bench_function("get_block_collisions_player_in_solid", |b| {
+        b.iter(|| {
+            let collisions = provider.get_block_collisions(black_box(&player_aabb));
+            black_box(collisions.len())
+        });
+    });
+
+    group.bench_function("has_block_collision_player_in_solid", |b| {
+        b.iter(|| {
+            let has = provider.has_block_collision(black_box(&player_aabb));
+            black_box(has)
+        });
+    });
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_ticket_propagation,
     bench_spatial_entity_manager,
-    bench_paletted_container_write
+    bench_paletted_container_write,
+    bench_block_collision
 );
 criterion_main!(benches);

@@ -405,6 +405,29 @@ impl<'a> WorldCollisionProvider<'a> {
         let mut main_support_distance = f64::MAX;
         let _ =
             self.visit_block_collision_candidates(bounds, |block_pos, block_state, cursor_type| {
+                if !block_state.get_block().config.dynamic_shape
+                    && steel_registry::blocks::shapes::is_shape_full_block(
+                        block_state.get_static_collision_shape(),
+                    )
+                {
+                    if cursor_type == CollisionCursorType::Inside {
+                        let world_box = BlockLocalAabb::FULL_BLOCK.at_block(block_pos);
+                        if aabb.intersects(world_box) {
+                            let distance = block_pos_center_distance_sq(block_pos, entity_position);
+                            let should_replace = distance < main_support_distance
+                                || distance == main_support_distance
+                                    && main_support.is_none_or(|support| {
+                                        vanilla_block_pos_less(support, block_pos)
+                                    });
+                            if should_replace {
+                                main_support = Some(block_pos);
+                                main_support_distance = distance;
+                            }
+                        }
+                    }
+                    return ControlFlow::Continue(());
+                }
+
                 let collision_shape = self.get_collision_shape(block_state, block_pos, context);
                 if collision_shape.boxes.is_empty()
                     || !should_query_collision_shape(block_state, &collision_shape, cursor_type)
@@ -416,7 +439,6 @@ impl<'a> WorldCollisionProvider<'a> {
                 {
                     return ControlFlow::<()>::Continue(());
                 }
-
                 let distance = block_pos_center_distance_sq(block_pos, entity_position);
                 let should_replace = distance < main_support_distance
                     || distance == main_support_distance
@@ -666,6 +688,20 @@ impl CollisionWorld for WorldCollisionProvider<'_> {
         let mut collisions = Vec::new();
         let _ =
             self.visit_block_collision_candidates(bounds, |block_pos, block_state, cursor_type| {
+                if !block_state.get_block().config.dynamic_shape
+                    && steel_registry::blocks::shapes::is_shape_full_block(
+                        block_state.get_static_collision_shape(),
+                    )
+                {
+                    if cursor_type == CollisionCursorType::Inside {
+                        let world_box = BlockLocalAabb::FULL_BLOCK.at_block(block_pos);
+                        if aabb.intersects(world_box) {
+                            collisions.push(world_box);
+                        }
+                    }
+                    return ControlFlow::Continue(());
+                }
+
                 let collision_shape = self.get_collision_shape(block_state, block_pos, context);
                 if collision_shape.boxes.is_empty()
                     || !should_query_collision_shape(block_state, &collision_shape, cursor_type)
@@ -692,6 +728,20 @@ impl CollisionWorld for WorldCollisionProvider<'_> {
     ) -> bool {
         let bounds = BlockCollisionSearchBounds::from_aabb(aabb);
         self.visit_block_collision_candidates(bounds, |block_pos, block_state, cursor_type| {
+            if !block_state.get_block().config.dynamic_shape
+                && steel_registry::blocks::shapes::is_shape_full_block(
+                    block_state.get_static_collision_shape(),
+                )
+            {
+                if cursor_type == CollisionCursorType::Inside {
+                    let world_box = BlockLocalAabb::FULL_BLOCK.at_block(block_pos);
+                    if aabb.intersects(world_box) {
+                        return ControlFlow::Break(());
+                    }
+                }
+                return ControlFlow::Continue(());
+            }
+
             let collision_shape = self.get_collision_shape(block_state, block_pos, context);
             if collision_shape.boxes.is_empty()
                 || !should_query_collision_shape(block_state, &collision_shape, cursor_type)
