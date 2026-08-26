@@ -4,8 +4,9 @@ use std::hint::black_box;
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use glam::DVec3;
 use steel_core::world::explosion_benchmark_support::{
-    run_e2e_tnt_chain_detonation, run_mass_detonation, run_single_explosion, setup_benchmark_world,
-    spawn_stationary_tnt, test_stable_air_box_is_clear, tick_stationary_tnt,
+    populate_pigs, run_e2e_tnt_chain_detonation, run_entity_aabb_query, run_mass_detonation,
+    run_single_explosion, setup_benchmark_world, spawn_stationary_tnt,
+    test_stable_air_box_is_clear, tick_stationary_tnt,
 };
 use steel_utils::ChunkPos;
 
@@ -88,10 +89,45 @@ fn bench_stable_air_box_is_clear(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_entity_aabb_query(c: &mut Criterion) {
+    const PIG_COUNT: usize = 200;
+
+    let world = setup_benchmark_world("entity_query_bench");
+    let spawned = populate_pigs(&world, PIG_COUNT);
+    assert_eq!(spawned, PIG_COUNT);
+
+    let mut group = c.benchmark_group("entity_query");
+    group.throughput(Throughput::Elements(1));
+
+    group.bench_function("empty_volume_100_matches_none", |b| {
+        b.iter(|| {
+            // High above the floor: exercises the full query path with zero matches.
+            black_box(run_entity_aabb_query(
+                &world,
+                [-12.0, 80.0, -12.0, 12.0, 96.0, 12.0],
+                true,
+            ))
+        });
+    });
+
+    group.bench_function("populated_volume_200", |b| {
+        b.iter(|| {
+            // Covers the entire spawn strip so every pig intersects the box.
+            black_box(run_entity_aabb_query(
+                &world,
+                [-18.0, 60.0, -18.0, 18.0, 70.0, 18.0],
+                true,
+            ))
+        });
+    });
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_e2e_1000_tnt_chain,
-    bench_stationary_tnt_tick,
+    bench_entity_aabb_query,
     bench_single_explosion_radius_4,
     bench_mass_detonation_100_tnt,
     bench_stable_air_box_is_clear,

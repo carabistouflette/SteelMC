@@ -531,13 +531,13 @@ pub mod benchmark_support {
     use glam::DVec3;
     use steel_registry::{init_vanilla_registry, vanilla_blocks, vanilla_entities};
     use steel_utils::types::UpdateFlags;
-    use steel_utils::{BlockPos, ChunkPos};
+    use steel_utils::{BlockPos, ChunkPos, WorldAabb};
 
     use crate::behavior::init_behaviors;
     use crate::test_support::{fresh_test_world, insert_ready_full_chunk};
     use crate::world::{ExplosionInteraction, ExplosionOptions, World};
 
-    use crate::entity::entities::PrimedTntEntity;
+    use crate::entity::entities::{PigEntity, PrimedTntEntity};
     use crate::entity::{Entity as _, next_entity_id};
 
     /// Sets up a RAM-backed world loaded with chunks and terrain for explosion benchmarking.
@@ -668,5 +668,38 @@ pub mod benchmark_support {
             }
         }
         total_affected
+    }
+
+    /// Spawns `count` passive pig entities standing on the benchmark floor within
+    /// the [-16, 16] x [-16, 16] area. Entities are never ticked; they exist purely
+    /// as stable query targets.
+    pub fn populate_pigs(world: &Arc<World>, count: usize) -> usize {
+        let mut spawned = 0;
+        for i in 0..count {
+            let ox = (i % 25) as f64 * 1.28 - 16.0;
+            let oz = (i / 25) as f64 * 1.28 - 12.8;
+            let position = DVec3::new(ox, 65.0, oz);
+            let entity = Arc::new(PigEntity::new(
+                &vanilla_entities::PIG,
+                next_entity_id(),
+                position,
+                Arc::downgrade(world),
+            ));
+            if world.try_add_entity(entity).is_ok() {
+                spawned += 1;
+            }
+        }
+        spawned
+    }
+
+    /// Runs one spatial AABB entity query and returns the match count.
+    pub fn run_entity_aabb_query(world: &Arc<World>, bounds: [f64; 6], keep_all: bool) -> usize {
+        let [min_x, min_y, min_z, max_x, max_y, max_z] = bounds;
+        let aabb = WorldAabb::new(min_x, min_y, min_z, max_x, max_y, max_z);
+        let entities = world.get_entities_in_aabb_matching(&aabb, |entity| {
+            let _ = entity;
+            keep_all
+        });
+        entities.len()
     }
 }
