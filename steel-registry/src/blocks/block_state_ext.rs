@@ -593,8 +593,7 @@ mod tests {
         }
         assert!(
             empty_collision.is_empty(),
-            "full-render states must have non-empty static collision: {:?}",
-            empty_collision
+            "full-render states must have non-empty static collision: {empty_collision:?}"
         );
 
         println!(
