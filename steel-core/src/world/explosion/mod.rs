@@ -582,4 +582,30 @@ pub mod benchmark_support {
         }
         total
     }
+
+    /// Tests an air certificate box query against a chunk section.
+    pub fn test_stable_air_box_is_clear(
+        world: &Arc<World>,
+        pos: ChunkPos,
+        bounds: [usize; 6],
+    ) -> bool {
+        use crate::chunk::status::ChunkStatus;
+
+        let [min_x, max_x, min_y, max_y, min_z, max_z] = bounds;
+        world
+            .chunk_map
+            .chunks
+            .read_sync(&pos, |_, holder| {
+                let Some(chunk) = holder.try_chunk(ChunkStatus::Full) else {
+                    return false;
+                };
+                let Some(section) = chunk.sections.sections.get(8) else {
+                    return false;
+                };
+                section
+                    .read()
+                    .stable_air_box_is_clear(min_x, max_x, min_y, max_y, min_z, max_z)
+            })
+            .unwrap_or(false)
+    }
 }

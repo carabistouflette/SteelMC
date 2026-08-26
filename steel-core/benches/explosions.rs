@@ -4,8 +4,9 @@ use std::hint::black_box;
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use glam::DVec3;
 use steel_core::world::explosion_benchmark_support::{
-    run_mass_detonation, run_single_explosion, setup_benchmark_world,
+    run_mass_detonation, run_single_explosion, setup_benchmark_world, test_stable_air_box_is_clear,
 };
+use steel_utils::ChunkPos;
 
 fn bench_single_explosion_radius_4(c: &mut Criterion) {
     let world = setup_benchmark_world("single_explosion_bench");
@@ -36,9 +37,25 @@ fn bench_mass_detonation_100_tnt(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_stable_air_box_is_clear(c: &mut Criterion) {
+    let world = setup_benchmark_world("air_box_bench");
+    let mut group = c.benchmark_group("explosion/air_occupancy");
+    group.throughput(Throughput::Elements(1));
+
+    group.bench_function("box_is_clear_16x16", |b| {
+        b.iter(|| {
+            let is_clear =
+                test_stable_air_box_is_clear(&world, ChunkPos::new(0, 0), [0, 15, 0, 15, 0, 15]);
+            black_box(is_clear)
+        });
+    });
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_single_explosion_radius_4,
     bench_mass_detonation_100_tnt,
+    bench_stable_air_box_is_clear,
 );
 criterion_main!(benches);
