@@ -4,8 +4,9 @@ use std::hint::black_box;
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use glam::DVec3;
 use steel_core::world::explosion_benchmark_support::{
-    populate_pigs, run_e2e_tnt_chain_detonation, run_entity_aabb_query, run_mass_detonation,
-    run_single_explosion, setup_benchmark_world, spawn_stationary_tnt, tick_stationary_tnt,
+    populate_pigs, run_buried_single_explosion, run_e2e_tnt_chain_detonation,
+    run_entity_aabb_query, run_mass_detonation, run_single_explosion, setup_benchmark_world,
+    setup_buried_blast_world, spawn_stationary_tnt, tick_stationary_tnt,
 };
 
 fn bench_e2e_1000_tnt_chain(c: &mut Criterion) {
@@ -72,6 +73,18 @@ fn bench_mass_detonation_100_tnt(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_buried_explosion(c: &mut Criterion) {
+    let world = setup_buried_blast_world("buried_bench");
+    let mut group = c.benchmark_group("explosion/buried_solid");
+    group.throughput(Throughput::Elements(1));
+
+    group.bench_function("explode", |b| {
+        b.iter(|| black_box(run_buried_single_explosion(&world)))
+    });
+
+    group.finish();
+}
+
 fn bench_entity_aabb_query(c: &mut Criterion) {
     const PIG_COUNT: usize = 200;
 
@@ -111,6 +124,7 @@ criterion_group!(
     benches,
     bench_e2e_1000_tnt_chain,
     bench_stationary_tnt_tick,
+    bench_buried_explosion,
     bench_entity_aabb_query,
     bench_single_explosion_radius_4,
     bench_mass_detonation_100_tnt,

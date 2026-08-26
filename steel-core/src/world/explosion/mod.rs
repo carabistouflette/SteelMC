@@ -650,8 +650,47 @@ pub mod benchmark_support {
         total_ticks
     }
 
-    /// Executes a real-world E2E chain reaction of N explosions where each detonation
-    /// triggers subsequent explosions across live world chunks, destroying blocks and popping drops.
+    /// Benchmark world that is fully enclosed solid rock around the blast site:
+    /// chunks across [-2, 2]^2 are loaded and filled from y=24 to y=72, so a buried
+    /// explosion's rays travel through dense material in every direction without
+    /// reaching air.
+    pub fn setup_buried_blast_world(key: &'static str) -> Arc<World> {
+        init_vanilla_registry();
+        init_behaviors();
+        let world = fresh_test_world(key);
+        for cx in -2..=2 {
+            for cz in -2..=2 {
+                insert_ready_full_chunk(&world, ChunkPos::new(cx, cz));
+            }
+        }
+        let stone = vanilla_blocks::STONE.default_state();
+        for x in -20..=20 {
+            for z in -20..=20 {
+                for y in 24..=72 {
+                    world.set_block(
+                        BlockPos::new(x, y, z),
+                        stone,
+                        UpdateFlags::UPDATE_NONE | UpdateFlags::UPDATE_SKIP_ON_PLACE,
+                    );
+                }
+            }
+        }
+        world
+    }
+
+    /// Runs one explosion buried inside solid rock at (0.5, 48.5, 0.5).
+    pub fn run_buried_single_explosion(world: &Arc<World>) -> usize {
+        let options =
+            ExplosionOptions::new(DVec3::new(0.5, 48.5, 0.5), 4.0, ExplosionInteraction::Tnt);
+        world.explode(options).affected_block_count
+    }
+
+    /// Measures sequential explosion-processing throughput over live world chunks.
+    ///
+    /// Scope note: this drives `World::explode` directly - there are no primed-TNT
+    /// entities, fuses, or chained detonations here, and later batches detonate over
+    /// terrain already cratered by earlier batches (favoring air-heavy cells). Use it
+    /// to compare explosion *processing* cost, not end-to-end chain gameplay.
     pub fn run_e2e_tnt_chain_detonation(world: &Arc<World>, total_tnt: usize) -> usize {
         let mut total_affected = 0;
         let batch_size = 100;
