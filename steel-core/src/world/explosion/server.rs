@@ -1589,7 +1589,9 @@ fn default_explosion_damage_source(
     direct: Option<&dyn Entity>,
     indirect: Option<&dyn Entity>,
 ) -> DamageSource {
-    let damage_type = if indirect.is_some_and(|entity| entity.as_player().is_some()) {
+    // Vanilla `DamageSources.explosion(entity, cause)`: PLAYER_EXPLOSION requires both a
+    // direct source and an indirect cause, otherwise EXPLOSION.
+    let damage_type = if direct.is_some() && indirect.is_some() {
         &vanilla_damage_types::PLAYER_EXPLOSION
     } else {
         &vanilla_damage_types::EXPLOSION
