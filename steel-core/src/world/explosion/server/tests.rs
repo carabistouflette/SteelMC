@@ -1480,3 +1480,118 @@ fn reused_set_matches_fresh_growth_after_larger_explosion() {
         "a reused set cleared back to DEFAULT_CAPACITY must iterate like a fresh one"
     );
 }
+
+struct Scenario {
+    name: &'static str,
+    ops: Vec<String>,
+}
+
+#[test]
+fn jdk_hash_map_iteration_differential_openjdk25() {
+    use std::{
+        fs,
+        path::Path,
+        process::{Command, Stdio},
+    };
+
+    let manifest = env!("CARGO_MANIFEST_DIR");
+    let java_dir = Path::new(manifest).join("tests/parity/java");
+    let out_dir = std::env::temp_dir().join("jdk_probe_parity");
+    fs::create_dir_all(&out_dir).expect("temp probe dir");
+    let class_file = out_dir.join("JdkHashMapProbe.class");
+    if !class_file.exists() {
+        Command::new("javac")
+            .arg("-d")
+            .arg(&out_dir)
+            .arg(java_dir.join("JdkHashMapProbe.java"))
+            .status()
+            .expect("javac invocation for parity probe");
+    }
+
+    let mut scenarios = Vec::new();
+    let mut state = 0x09E3_779B_97F4_AC15_u64;
+    let mut xorshift = || {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        state
+    };
+
+    // Randomized clouds crossing every capacity threshold, snapshots interleaved.
+    for seed_case in 0..16u64 {
+        let len = [8_usize, 24, 72, 200, 320][seed_case as usize % 5];
+        let mut ops = Vec::new();
+        for i in 0..len {
+            let r = xorshift();
+            ops.push(format!(
+                "A {} {} {}",
+                (r & 0xFFFF) as i32,
+                64 + ((r >> 16) & 0x3F) as i32,
+                ((r >> 24) & 0xFFFF) as i32
+            ));
+            if i % 37 == 0 {
+                ops.push("S".into());
+            }
+        }
+        ops.push("S".into());
+        scenarios.push(Scenario {
+            name: "random_cloud",
+            ops,
+        });
+    }
+
+    for scenario in &scenarios {
+        let mut child = Command::new("java")
+            .arg("-cp")
+            .arg(&out_dir)
+            .arg("JdkHashMapProbe")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("spawn java probe");
+        {
+            use std::io::Write as _;
+            let mut stdin = child.stdin.take().expect("java probe stdin");
+            for op in &scenario.ops {
+                writeln!(stdin, "{op}").expect("write java probe op");
+            }
+        }
+        let output = child.wait_with_output().expect("java probe completion");
+
+        let stdout_text = String::from_utf8(output.stdout).expect("probe stdout utf8");
+        let expected_lines: Vec<&str> = stdout_text.lines().collect();
+
+        let mut set = JavaBlockPosSet::default();
+        let mut snapshot_index = 0usize;
+        for op in &scenario.ops {
+            if op == "S" {
+                let actual: Vec<BlockPos> = set.iter_ordered();
+                let rendered: Vec<String> = actual
+                    .iter()
+                    .map(|pos| format!("{},{},{};", pos.x(), pos.y(), pos.z()))
+                    .collect();
+                assert_eq!(
+                    rendered.join(""),
+                    expected_lines[snapshot_index],
+                    "iteration order diverged from OpenJDK in scenario '{}', snapshot {}",
+                    scenario.name,
+                    snapshot_index
+                );
+                snapshot_index += 1;
+            } else {
+                let mut parts = op.split_whitespace();
+                assert_eq!(parts.next(), Some("A"));
+                let x: i32 = parts.next().expect("op x").parse().expect("op x value");
+                let y: i32 = parts.next().expect("op y").parse().expect("op y value");
+                let z: i32 = parts.next().expect("op z").parse().expect("op z value");
+                assert!(set.insert(BlockPos::new(x, y, z)));
+            }
+        }
+        assert_eq!(
+            snapshot_index,
+            expected_lines.len(),
+            "snapshot count mismatch in scenario '{}'",
+            scenario.name
+        );
+    }
+}

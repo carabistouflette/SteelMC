@@ -1494,6 +1494,16 @@ impl IntoIterator for JavaBlockPosSet {
     }
 }
 
+#[cfg(test)]
+impl JavaBlockPosSet {
+    /// Ordered snapshot without consuming the set (test-oracle helper).
+    pub(crate) fn iter_ordered(&self) -> Vec<BlockPos> {
+        let mut ordered = Vec::with_capacity(self.entries.len());
+        self.collect_into(&mut ordered);
+        ordered
+    }
+}
+
 const JAVA_BLOCK_POS_SET_EMPTY_INDEX: u32 = u32::MAX;
 
 #[inline]
