@@ -46,7 +46,8 @@ pub struct GameplayChunkLookupCacheStats {
     pub scc_lookups: usize,
     /// Lookups for another chunk map while this scope was active.
     pub foreign_map_bypasses: usize,
-    /// Least-recently-used entries displaced from a full cache.
+    /// Displaced entries: counts every overwrite of an occupied slot, which under the
+    /// direct-mapped layout is a hash-slot collision rather than an LRU eviction.
     pub evictions: usize,
 }
 

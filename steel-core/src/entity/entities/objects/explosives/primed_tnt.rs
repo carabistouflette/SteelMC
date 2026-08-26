@@ -312,12 +312,19 @@ impl Entity for PrimedTntEntity {
             && velocity.z.abs() < 1e-6
             && velocity.y.abs() < 1e-6;
 
+        // The fast path requires feet resting exactly on a full-cell top: sub-full-height
+        // supports (snow layers, carpets, bottom slabs) put the floored feet cell inside the
+        // support itself, so pos.below() would validate the wrong block and a later removal
+        // of that actual support would leave TNT hovering. Vanilla resting positions are
+        // dyadic multiples of 1/16, so the fract() test is float-exact.
         if is_stationary_on_ground
+            && self.position().y.fract() == 0.0
             && let Some(world) = self.level()
             && let pos = BlockPos::from(self.position())
             && world.get_block_state(pos.below()).is_solid_render()
         {
-            self.set_velocity(DVec3::ZERO);
+            // Velocity is left at its sub-threshold residual: hard-pinning to zero would
+            // emit the became-stationary motion packet one sync earlier than vanilla can.
             self.apply_effects_from_blocks();
         } else {
             self.apply_gravity();

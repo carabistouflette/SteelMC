@@ -1445,3 +1445,38 @@ fn test_e2e_10000_tnt_detonation() {
 
     assert!(total_affected > 0);
 }
+
+#[test]
+fn reused_set_matches_fresh_growth_after_larger_explosion() {
+    // Regression for the scratchpad reuse divergence: a set that grew large must
+    // iterate identically to a freshly constructed one after clear(), because the
+    // destruction shuffle and create_fire draw RNG per position in list order.
+    let small_positions: Vec<BlockPos> = (0..24).map(|i| BlockPos::new(i * 3, 70, i)).collect();
+    let large_positions: Vec<BlockPos> = (0..300).map(|i| BlockPos::new(i, 64, 3)).collect();
+
+    let mut reused = JavaBlockPosSet::default();
+    for pos in &large_positions {
+        assert!(reused.insert(*pos));
+    }
+    assert!(reused.buckets.len() > JavaBlockPosSet::DEFAULT_CAPACITY);
+    reused.clear();
+
+    let fresh = {
+        let mut set = JavaBlockPosSet::default();
+        for pos in &small_positions {
+            assert!(set.insert(*pos));
+        }
+        let ordered: Vec<BlockPos> = set.into_iter().collect();
+        ordered
+    };
+
+    for pos in &small_positions {
+        assert!(reused.insert(*pos));
+    }
+    let iterated: Vec<BlockPos> = reused.into_iter().collect();
+
+    assert_eq!(
+        iterated, fresh,
+        "a reused set cleared back to DEFAULT_CAPACITY must iterate like a fresh one"
+    );
+}

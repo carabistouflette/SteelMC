@@ -994,18 +994,23 @@ impl<'a> ServerExplosion<'a> {
             0.0
         } else if inert_primed_tnt {
             let entity_box = entity.bounding_box();
+            let fall_distance_bits = entity.fall_distance().to_bits();
             let memo_idx = ((entity_box.min_x().to_bits()
                 ^ entity_box.min_y().to_bits()
                 ^ entity_box.min_z().to_bits()) as usize)
                 & 7;
             let entry = tnt_memo[memo_idx];
-            if entry.valid && entry.bounding_box == entity_box {
+            if entry.valid
+                && entry.bounding_box == entity_box
+                && entry.fall_distance_bits == fall_distance_bits
+            {
                 entry.exposure
             } else {
                 let calculated = EntityExplosionExposure::capture(entity)
                     .calculate_cached_with(exposure_raycast, self.center);
                 tnt_memo[memo_idx] = TntExposureMemo {
                     bounding_box: entity_box,
+                    fall_distance_bits,
                     exposure: calculated,
                     valid: true,
                 };
@@ -1346,6 +1351,14 @@ impl JavaBlockPosSet {
     }
 
     fn clear(&mut self) {
+        // Truncate back to the fresh-growth starting capacity so a reused set iterates
+        // exactly like a newly constructed one for any following explosion. Truncation
+        // keeps the allocated buffer, so the zero-allocation steady state is preserved.
+        self.buckets.truncate(Self::DEFAULT_CAPACITY);
+        if self.buckets.len() < Self::DEFAULT_CAPACITY {
+            self.buckets
+                .resize(Self::DEFAULT_CAPACITY, JavaBlockPosBucket::EMPTY);
+        }
         self.buckets.fill(JavaBlockPosBucket::EMPTY);
         self.entries.clear();
     }
@@ -1575,6 +1588,7 @@ impl Explosion for ServerExplosion<'_> {
 #[derive(Clone, Copy)]
 struct TntExposureMemo {
     bounding_box: WorldAabb,
+    fall_distance_bits: u64,
     exposure: f32,
     valid: bool,
 }
@@ -1582,6 +1596,7 @@ struct TntExposureMemo {
 impl TntExposureMemo {
     const EMPTY: Self = Self {
         bounding_box: WorldAabb::new(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+        fall_distance_bits: 0,
         exposure: 0.0,
         valid: false,
     };
