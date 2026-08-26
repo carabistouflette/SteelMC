@@ -1489,14 +1489,14 @@ struct Scenario {
 #[test]
 fn jdk_hash_map_iteration_differential_openjdk25() {
     use std::{
-        fs,
+        env, fs,
         path::Path,
         process::{Command, Stdio},
     };
 
     let manifest = env!("CARGO_MANIFEST_DIR");
     let java_dir = Path::new(manifest).join("tests/parity/java");
-    let out_dir = std::env::temp_dir().join("jdk_probe_parity");
+    let out_dir = env::temp_dir().join("jdk_probe_parity");
     fs::create_dir_all(&out_dir).expect("temp probe dir");
     let class_file = out_dir.join("JdkHashMapProbe.class");
     if !class_file.exists() {
