@@ -126,7 +126,7 @@ fn bench_entity_aabb_query(c: &mut Criterion) {
 
 criterion_group!(
     benches,
-    bench_e2e_1000_tnt_chain,
+    bench_stationary_tnt_tick,
     bench_entity_aabb_query,
     bench_single_explosion_radius_4,
     bench_mass_detonation_100_tnt,
