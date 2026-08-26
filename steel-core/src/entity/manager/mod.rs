@@ -1748,6 +1748,13 @@ impl WorldEntityManager {
                 continue;
             }
 
+            // Re-checked without the manager lock so a world change queued after the
+            // snapshot (by this entity's own portal handling or a vehicle relationship
+            // change) still skips this tick, matching per-entity validation semantics.
+            if Self::has_pending_world_change_in_vehicle_chain(&entity) {
+                continue;
+            }
+
             if Self::is_entity_frozen_by_tick_rate(entity.as_ref(), runs_normally) {
                 continue;
             }
