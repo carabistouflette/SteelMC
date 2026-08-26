@@ -522,3 +522,184 @@ fn default_block_particles() -> ExplosionParticlePalette {
     };
     palette
 }
+
+/// Internal benchmark support module for measuring explosion performance.
+#[cfg(feature = "benchmark-support")]
+pub mod benchmark_support {
+    use std::sync::Arc;
+
+    use glam::DVec3;
+    use steel_registry::{init_vanilla_registry, vanilla_blocks, vanilla_entities};
+    use steel_utils::types::UpdateFlags;
+    use steel_utils::{BlockPos, ChunkPos, WorldAabb};
+
+    use crate::behavior::init_behaviors;
+    use crate::test_support::{fresh_test_world, insert_ready_full_chunk};
+    use crate::world::{ExplosionInteraction, ExplosionOptions, World};
+
+    use crate::entity::entities::{PigEntity, PrimedTntEntity};
+    use crate::entity::{Entity as _, next_entity_id};
+
+    /// Sets up a RAM-backed world loaded with chunks and terrain for explosion benchmarking.
+    pub fn setup_benchmark_world(key: &'static str) -> Arc<World> {
+        init_vanilla_registry();
+        init_behaviors();
+        let world = fresh_test_world(key);
+        for cx in -2..=2 {
+            for cz in -2..=2 {
+                insert_ready_full_chunk(&world, ChunkPos::new(cx, cz));
+            }
+        }
+        let stone = vanilla_blocks::STONE.default_state();
+        for x in -16..=16 {
+            for y in 48..=80 {
+                for z in -16..=16 {
+                    if y <= 64 {
+                        world.set_block(
+                            BlockPos::new(x, y, z),
+                            stone,
+                            UpdateFlags::UPDATE_NONE | UpdateFlags::UPDATE_SKIP_ON_PLACE,
+                        );
+                    }
+                }
+            }
+        }
+        world
+    }
+
+    /// Executes a single radius 4 explosion.
+    pub fn run_single_explosion(world: &Arc<World>, center: DVec3) -> usize {
+        let options = ExplosionOptions::new(center, 4.0, ExplosionInteraction::Tnt);
+        world.explode(options).affected_block_count
+    }
+
+    /// Executes a batch of sequential explosions for mass detonation benchmarking.
+    pub fn run_mass_detonation(world: &Arc<World>, count: usize) -> usize {
+        let mut total = 0;
+        for i in 0..count {
+            let ox = (i % 10) as f64 - 5.0;
+            let oz = (i / 10) as f64 - 5.0;
+            let center = DVec3::new(ox + 0.5, 64.5, oz + 0.5);
+            let options = ExplosionOptions::new(center, 4.0, ExplosionInteraction::Tnt);
+            total += world.explode(options).affected_block_count;
+        }
+        total
+    }
+
+    /// Tests an air certificate box query against a chunk section.
+    pub fn test_stable_air_box_is_clear(
+        world: &Arc<World>,
+        pos: ChunkPos,
+        bounds: [usize; 6],
+    ) -> bool {
+        use crate::chunk::status::ChunkStatus;
+
+        let [min_x, max_x, min_y, max_y, min_z, max_z] = bounds;
+        world
+            .chunk_map
+            .chunks
+            .read_sync(&pos, |_, holder| {
+                let Some(chunk) = holder.try_chunk(ChunkStatus::Full) else {
+                    return false;
+                };
+                let Some(section) = chunk.sections.sections.get(8) else {
+                    return false;
+                };
+                section
+                    .read()
+                    .stable_air_box_is_clear(min_x, max_x, min_y, max_y, min_z, max_z)
+            })
+            .unwrap_or(false)
+    }
+
+    /// Spawns `count` primed TNT entities resting stationary on the benchmark floor.
+    pub fn spawn_stationary_tnt(world: &Arc<World>, count: usize) -> Vec<Arc<PrimedTntEntity>> {
+        let mut entities = Vec::with_capacity(count);
+        for i in 0..count {
+            let ox = f64::from((i % 50) as i32) * 0.64 - 16.0;
+            let oz = f64::from((i / 50) as i32) * 0.64 - 12.8;
+            let entity = PrimedTntEntity::new(
+                &vanilla_entities::TNT,
+                next_entity_id(),
+                DVec3::new(ox, 65.0, oz),
+                Arc::downgrade(world),
+            );
+            entity.set_on_ground(true);
+            entities.push(Arc::new(entity));
+        }
+        entities
+    }
+
+    /// Ticks stationary primed TNT entities, refreshing fuses so nothing detonates mid-run.
+    pub fn tick_stationary_tnt(
+        entities: &[Arc<PrimedTntEntity>],
+        ticks_per_iteration: usize,
+    ) -> usize {
+        const FUSE_RESET_THRESHOLD: i32 = 10;
+
+        let mut total_ticks = 0;
+        for _ in 0..ticks_per_iteration {
+            for entity in entities {
+                if entity.fuse() < FUSE_RESET_THRESHOLD {
+                    entity.set_fuse(PrimedTntEntity::DEFAULT_FUSE_TIME);
+                }
+                entity.tick();
+                total_ticks += 1;
+            }
+        }
+        total_ticks
+    }
+
+    /// Executes a real-world E2E chain reaction of N explosions where each detonation
+    /// triggers subsequent explosions across live world chunks, destroying blocks and popping drops.
+    pub fn run_e2e_tnt_chain_detonation(world: &Arc<World>, total_tnt: usize) -> usize {
+        let mut total_affected = 0;
+        let batch_size = 100;
+        let iterations = (total_tnt / batch_size).max(1);
+        for iter in 0..iterations {
+            let base_x = ((iter % 10) as f64 - 5.0) * 8.0;
+            let base_z = ((iter / 10) as f64 - 5.0) * 8.0;
+            for i in 0..batch_size {
+                let ox = base_x + (i % 10) as f64 * 0.8;
+                let oz = base_z + (i / 10) as f64 * 0.8;
+                let center = DVec3::new(ox, 64.5, oz);
+                let options = ExplosionOptions::new(center, 4.0, ExplosionInteraction::Tnt);
+                total_affected += world.explode(options).affected_block_count;
+            }
+        }
+        total_affected
+    }
+
+    /// Spawns `count` passive pig entities standing on the benchmark floor within
+    /// the [-16, 16] x [-16, 16] area. Entities are never ticked; they exist purely
+    /// as stable query targets.
+    pub fn populate_pigs(world: &Arc<World>, count: usize) -> usize {
+        let mut spawned = 0;
+        for i in 0..count {
+            let ox = (i % 25) as f64 * 1.28 - 16.0;
+            let oz = (i / 25) as f64 * 1.28 - 12.8;
+            let position = DVec3::new(ox, 65.0, oz);
+            let entity = Arc::new(PigEntity::new(
+                &vanilla_entities::PIG,
+                next_entity_id(),
+                position,
+                Arc::downgrade(world),
+            ));
+            if world.try_add_entity(entity).is_ok() {
+                spawned += 1;
+            }
+        }
+        spawned
+    }
+
+    /// Runs one spatial AABB entity query and returns the match count.
+    pub fn run_entity_aabb_query(world: &Arc<World>, bounds: [f64; 6], keep_all: bool) -> usize {
+        let [min_x, min_y, min_z, max_x, max_y, max_z] = bounds;
+        let aabb = WorldAabb::new(min_x, min_y, min_z, max_x, max_y, max_z);
+        let entities = world.get_entities_in_aabb_matching(&aabb, |entity| {
+            let _ = entity;
+            keep_all
+        });
+        entities.len()
+    }
+}

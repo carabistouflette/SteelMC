@@ -143,8 +143,10 @@ pub use border::WorldBorderError;
 use border::{WorldBorder, WorldBorderSnapshot};
 pub(crate) use domain_entity_directory::DomainEntityDirectory;
 use entity_management::NavigatingMobTracker;
-#[cfg(test)]
+#[cfg(any(test, feature = "benchmark-support"))]
 use entity_management::nearest_player_distance_in_range;
+#[cfg(feature = "benchmark-support")]
+pub use explosion::benchmark_support as explosion_benchmark_support;
 pub use explosion::{
     BlockInteraction, DefaultExplosionDamageCalculator, EntityBasedExplosionDamageCalculator,
     Explosion, ExplosionDamageCalculator, ExplosionInteraction, ExplosionOptions, ExplosionOutcome,
