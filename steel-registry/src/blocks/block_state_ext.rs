@@ -537,4 +537,70 @@ mod tests {
         assert!(!water.randomly_ticking_block());
         assert!(!water.randomly_ticking_fluid());
     }
+
+    #[test]
+    fn solid_render_supports_rest_heights_are_exact_dyadics() {
+        // Stationary-fast-path theorem scan: every full-render state must present an
+        // exact dyadic collision top (k/16), so the runtime fract(y)==0.0 rest gate
+        // classifies support validity without float ambiguity across the whole
+        // registry. Empty-collision full-render states cannot host resting TNT and
+        // are reported separately.
+        init_vanilla_registry();
+
+        let total = REGISTRY.blocks.next_state_id;
+        let mut full_top = 0usize;
+        let mut partial_dyadic = Vec::new();
+        let mut empty_collision = Vec::new();
+
+        for raw in 0..total {
+            let state = BlockStateId(raw);
+            if !state.is_solid_render() {
+                continue;
+            }
+            let shape = state.get_static_collision_shape();
+            if shape.is_empty() {
+                empty_collision.push(raw);
+                continue;
+            }
+            let bounds = crate::blocks::shapes::bounding_box(shape);
+            let top: f64 = bounds.max_y() - bounds.min_y();
+            if top >= 1.0 {
+                full_top += 1;
+                continue;
+            }
+            let scaled = top * 16.0;
+            assert!(
+                (scaled - scaled.round()).abs() < 1e-9,
+                "state {raw} has non-dyadic partial render height {top}"
+            );
+            assert!(
+                top > 0.0,
+                "state {raw} renders solid with zero-height collision"
+            );
+            partial_dyadic.push((raw, top));
+        }
+
+        // Resting feet y equals cell_base + top; fract(feet) == 0 iff top is integral.
+        // All partial tops are k/16 (k in 1..16), i.e. strictly non-integral dyadics,
+        // so the fract gate provably excludes them from the stationary fast path.
+        for (raw, top) in &partial_dyadic {
+            let feet_y: f64 = 64.0 + *top;
+            assert_ne!(
+                feet_y.fract(),
+                0.0,
+                "state {raw}: partial top would alias an integer rest height"
+            );
+        }
+        assert!(
+            empty_collision.is_empty(),
+            "full-render states must have non-empty static collision: {:?}",
+            empty_collision
+        );
+
+        println!(
+            "solid-render registry scan: {} full-top, {} partial-dyadic supports",
+            full_top,
+            partial_dyadic.len()
+        );
+    }
 }

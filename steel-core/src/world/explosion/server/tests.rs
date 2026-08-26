@@ -1595,3 +1595,39 @@ fn jdk_hash_map_iteration_differential_openjdk25() {
         );
     }
 }
+
+#[test]
+fn dense_cache_generation_survives_wraparound_without_aliasing() {
+    use super::{DENSE_CACHE_SCRATCHPAD, DenseExplosionBlockCacheSlot};
+
+    const VOLUME: usize = 4;
+
+    DENSE_CACHE_SCRATCHPAD.with(|cell| {
+        let mut scratchpad = cell.borrow_mut();
+
+        // Size the slot array once, then park the epoch directly before wraparound and fill every slot with the
+        let _ = scratchpad.prepare(VOLUME);
+        scratchpad.generation = u32::MAX;
+        scratchpad.slots[..VOLUME].fill(DenseExplosionBlockCacheSlot {
+            generation: u32::MAX,
+            entry_index: 0,
+        });
+
+        let first = scratchpad.prepare(VOLUME);
+        assert_eq!(first, 1);
+        assert!(
+            scratchpad.slots[..VOLUME]
+                .iter()
+                .all(|slot| slot.generation != first)
+        );
+
+        // A later explosion advances monotonically; untouched slots still miss.
+        let second = scratchpad.prepare(VOLUME);
+        assert_eq!(second, 2);
+        assert!(
+            scratchpad.slots[..VOLUME]
+                .iter()
+                .all(|slot| slot.generation != second)
+        );
+    });
+}
