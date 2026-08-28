@@ -16,12 +16,24 @@ use std::{
 use steel_utils::{BlockPos, BlockStateId, ChunkPos};
 
 use super::{chunk_holder::ChunkHolder, chunk_map::ChunkMap, status::ChunkStatus};
+use steel_utils::types::PackedChunkPos;
 
-// Vanilla's ServerChunkCache also keeps four recent synchronous lookups. Steel
-// caches holders rather than a status-specific chunk view so concurrent publication stays visible.
-// Unlike Vanilla's insertion-only ordering, hits are promoted here because one
-// holder entry serves every requested status; the cache telemetry validates that choice.
-const CACHE_ENTRY_COUNT: usize = 4;
+// Vanilla's ServerChunkCache keeps four recent synchronous lookups. Steel replaces that
+// recency list with O(1) hash-indexed slots sized far beyond any per-scope working set:
+// block-heavy workloads (explosions, mob AI sweeps, redstone updates) touch tens of chunk
+// columns inside one scope, where a small recency array thrashes by design. Slot overwrite
+// mirrors vanilla's ring eviction; only capacity, never identity or ordering semantics,
+// is observable. This is an internal knob.
+const CACHE_SLOT_COUNT: usize = 256;
+const CACHE_SLOT_MASK: usize = CACHE_SLOT_COUNT - 1;
+
+/// Spreads packed chunk positions uniformly across the direct-mapped cache slots.
+#[inline]
+fn cache_slot_index(pos: ChunkPos) -> usize {
+    let mixed = u64::from_ne_bytes(PackedChunkPos::from(pos).as_raw().to_ne_bytes())
+        .wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    ((mixed >> 56) as usize) & CACHE_SLOT_MASK
+}
 
 /// Lookup statistics collected without synchronization inside one cache scope.
 #[derive(Debug, Default)]
@@ -34,7 +46,8 @@ pub struct GameplayChunkLookupCacheStats {
     pub scc_lookups: usize,
     /// Lookups for another chunk map while this scope was active.
     pub foreign_map_bypasses: usize,
-    /// Least-recently-used entries displaced from a full cache.
+    /// Displaced entries: counts every overwrite of an occupied slot, which under the
+    /// direct-mapped layout is a hash-slot collision rather than an LRU eviction.
     pub evictions: usize,
 }
 
@@ -60,7 +73,7 @@ struct CacheEntry {
 struct ActiveCache {
     owner: CacheOwner,
     scope_id: Option<NonZeroU64>,
-    entries: [Option<CacheEntry>; CACHE_ENTRY_COUNT],
+    entries: [Option<CacheEntry>; CACHE_SLOT_COUNT],
     stats: GameplayChunkLookupCacheStats,
 }
 
@@ -74,61 +87,35 @@ impl ActiveCache {
         Self {
             owner,
             scope_id,
-            entries: [const { None }; CACHE_ENTRY_COUNT],
+            entries: [const { None }; CACHE_SLOT_COUNT],
             stats: GameplayChunkLookupCacheStats::default(),
         }
     }
 
     #[inline]
     fn lookup(&mut self, pos: ChunkPos) -> CacheEntryProbe {
-        let Some(index) = self
-            .entries
-            .iter()
-            .position(|entry| entry.as_ref().is_some_and(|entry| entry.pos == pos))
-        else {
+        let index = cache_slot_index(pos);
+        let Some(entry) = self.entries[index].as_ref() else {
             return CacheEntryProbe::Miss;
         };
-        let holder = self.entries[index]
-            .as_ref()
-            .and_then(|entry| entry.holder.as_ref().map(Arc::clone));
+        if entry.pos != pos {
+            return CacheEntryProbe::Miss;
+        }
+        let holder = entry.holder.as_ref().map(Arc::clone);
         if holder.is_some() {
             self.stats.holder_hits += 1;
         } else {
             self.stats.missing_hits += 1;
         }
-        self.promote(index);
         CacheEntryProbe::Hit(holder)
     }
 
     fn insert(&mut self, pos: ChunkPos, holder: Option<Arc<ChunkHolder>>) {
-        if let Some(index) = self
-            .entries
-            .iter()
-            .position(|entry| entry.as_ref().is_some_and(|entry| entry.pos == pos))
-        {
-            self.entries[index] = Some(CacheEntry { pos, holder });
-            self.promote(index);
-            return;
-        }
-
-        if self.entries[CACHE_ENTRY_COUNT - 1].is_some() {
+        let index = cache_slot_index(pos);
+        if self.entries[index].is_some() {
             self.stats.evictions += 1;
         }
-        for index in (1..CACHE_ENTRY_COUNT).rev() {
-            self.entries[index] = self.entries[index - 1].take();
-        }
-        self.entries[0] = Some(CacheEntry { pos, holder });
-    }
-
-    fn promote(&mut self, index: usize) {
-        if index == 0 {
-            return;
-        }
-        let entry = self.entries[index].take();
-        for target in (1..=index).rev() {
-            self.entries[target] = self.entries[target - 1].take();
-        }
-        self.entries[0] = entry;
+        self.entries[index] = Some(CacheEntry { pos, holder });
     }
 }
 
@@ -206,7 +193,7 @@ impl<'map> GameplayChunkLookupCacheScope<'map> {
 /// enough to copy the state. Missing and unpublished chunks are never retained.
 pub(crate) struct LocalFullChunkHolderCache {
     scope_id: Option<NonZeroU64>,
-    entries: [Option<LocalFullChunkHolderCacheEntry>; CACHE_ENTRY_COUNT],
+    entries: [Option<LocalFullChunkHolderCacheEntry>; CACHE_SLOT_COUNT],
     #[cfg(test)]
     stats: LocalFullChunkHolderCacheStats,
 }
@@ -228,7 +215,7 @@ impl LocalFullChunkHolderCache {
     pub(crate) const fn new() -> Self {
         Self {
             scope_id: None,
-            entries: [const { None }; CACHE_ENTRY_COUNT],
+            entries: [const { None }; CACHE_SLOT_COUNT],
             #[cfg(test)]
             stats: LocalFullChunkHolderCacheStats {
                 holder_hits: 0,
@@ -260,24 +247,20 @@ impl LocalFullChunkHolderCache {
             return chunk_map.with_full_chunk(chunk_pos, |chunk| chunk.get_block_state(pos));
         };
 
-        if let Some(index) = self
-            .entries
-            .iter()
-            .position(|entry| entry.as_ref().is_some_and(|entry| entry.pos == chunk_pos))
+        let slot_index = cache_slot_index(chunk_pos);
+        if let Some(entry) = self.entries[slot_index]
+            .as_ref()
+            .filter(|entry| entry.pos == chunk_pos)
         {
-            let state = {
-                let entry = self.entries[index].as_ref()?;
-                live_full_block_state(&entry.holder, pos)
-            };
-            let Some(state) = state else {
-                self.remove(index);
+            let holder = &entry.holder;
+            let Some(state) = live_full_block_state(holder, pos) else {
+                self.entries[slot_index] = None;
                 return None;
             };
             #[cfg(test)]
             {
                 self.stats.holder_hits += 1;
             }
-            self.promote(index);
             return Some(state);
         }
 
@@ -287,33 +270,11 @@ impl LocalFullChunkHolderCache {
         }
         let holder = chunk_map.active_full_chunk_holder(chunk_pos)?;
         let state = live_full_block_state(&holder, pos)?;
-        self.insert(chunk_pos, holder);
+        self.entries[slot_index] = Some(LocalFullChunkHolderCacheEntry {
+            pos: chunk_pos,
+            holder,
+        });
         Some(state)
-    }
-
-    fn insert(&mut self, pos: ChunkPos, holder: Arc<ChunkHolder>) {
-        for index in (1..CACHE_ENTRY_COUNT).rev() {
-            self.entries[index] = self.entries[index - 1].take();
-        }
-        self.entries[0] = Some(LocalFullChunkHolderCacheEntry { pos, holder });
-    }
-
-    fn promote(&mut self, index: usize) {
-        if index == 0 {
-            return;
-        }
-        let entry = self.entries[index].take();
-        for target in (1..=index).rev() {
-            self.entries[target] = self.entries[target - 1].take();
-        }
-        self.entries[0] = entry;
-    }
-
-    fn remove(&mut self, index: usize) {
-        for target in index..CACHE_ENTRY_COUNT - 1 {
-            self.entries[target] = self.entries[target + 1].take();
-        }
-        self.entries[CACHE_ENTRY_COUNT - 1] = None;
     }
 
     #[cfg(test)]
@@ -428,61 +389,53 @@ mod tests {
     fn set_test_block(world: &Arc<World>, pos: BlockPos, block: BlockRef) {
         assert!(world.set_block(pos, block.default_state(), UpdateFlags::UPDATE_NONE));
     }
-
     #[test]
-    fn four_entry_cache_uses_most_recently_used_eviction() {
+    fn colliding_slots_overwrite_and_force_reload() {
         let owner = 0_u8;
         let scope = GameplayChunkLookupCacheScope::enter_owner(&owner);
-        let holders = (0..=4)
-            .map(|x| holder(ChunkPos::new(x, 0)))
-            .collect::<Vec<_>>();
+        let first = ChunkPos::new(5, 0);
+
+        // Find another chunk position that maps to the same direct-mapped slot.
+        let second = (1..=4096)
+            .map(|z| ChunkPos::new(5, z))
+            .find(|pos| cache_slot_index(*pos) == cache_slot_index(first))
+            .expect("a colliding position must exist among 4096 candidates for 256 slots");
+        let holder_a = holder(first);
+        let holder_b = holder(second);
         let mut loads = 0;
 
-        for (x, holder) in holders.iter().take(4).enumerate() {
-            let loaded = lookup_or_insert_for_owner(
-                CacheOwner::for_test(&owner),
-                ChunkPos::new(x as i32, 0),
-                || {
-                    loads += 1;
-                    Some(Arc::clone(holder))
-                },
-            );
-            drop(loaded);
-        }
         drop(lookup_or_insert_for_owner(
             CacheOwner::for_test(&owner),
-            ChunkPos::new(0, 0),
-            || panic!("the most-recently-used entry should hit"),
-        ));
-        drop(lookup_or_insert_for_owner(
-            CacheOwner::for_test(&owner),
-            ChunkPos::new(4, 0),
+            first,
             || {
                 loads += 1;
-                Some(Arc::clone(&holders[4]))
+                Some(Arc::clone(&holder_a))
             },
         ));
         drop(lookup_or_insert_for_owner(
             CacheOwner::for_test(&owner),
-            ChunkPos::new(0, 0),
-            || panic!("the promoted entry should remain cached"),
-        ));
-        drop(lookup_or_insert_for_owner(
-            CacheOwner::for_test(&owner),
-            ChunkPos::new(1, 0),
+            second,
             || {
                 loads += 1;
-                Some(Arc::clone(&holders[1]))
+                Some(Arc::clone(&holder_b))
+            },
+        ));
+        // Reloading `first` proves the collision overwrote its slot.
+        drop(lookup_or_insert_for_owner(
+            CacheOwner::for_test(&owner),
+            first,
+            || {
+                loads += 1;
+                Some(Arc::clone(&holder_a))
             },
         ));
 
         let stats = scope.finish();
-        assert_eq!(loads, 6);
-        assert_eq!(stats.holder_hits, 2);
-        assert_eq!(stats.scc_lookups, 6);
+        assert_eq!(loads, 3);
+        assert_eq!(stats.scc_lookups, 3);
         assert_eq!(stats.evictions, 2);
+        assert_eq!(stats.holder_hits, 0);
     }
-
     #[test]
     fn missing_holder_is_cached_within_scope() {
         let owner = 0_u8;
