@@ -45,3 +45,10 @@ text_components.workspace = true
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+
+[[bench]]
+name = "packet_codec"
+harness = false

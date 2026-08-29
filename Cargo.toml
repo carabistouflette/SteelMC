@@ -150,8 +150,10 @@ panic = "abort"
 
 [profile.profiling]
 inherits = "release"
-debug = true
-
+debug = 2
+split-debuginfo = "off"
+strip = "none"
+lto = "thin"
 [profile.flint]
 inherits = "dev"
 debug = true
@@ -203,8 +205,7 @@ unwrap_used = { level = "warn", priority = -3 }
 
 [profile.samply]
 inherits = "release"
-debug = true
-
+debug = 2
 [profile.samplydev]
 inherits = "dev"
 debug = true
