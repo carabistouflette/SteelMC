@@ -16,12 +16,12 @@ use crate::worldgen::generator::context::WorldGenContext;
 use crate::worldgen::region::WorldGenRegion;
 use steel_utils::ChunkPos;
 
-/// Reads `pos` and `pos.below()` the way the sculk patch spread predicate does:
-/// two separate region reads, each acquiring and releasing its section lock.
+/// Reads `pos` and `pos.below()` the way the sculk patch spread predicate does
+/// on this branch: one batched region read acquiring the section lock once.
 #[must_use]
 pub fn read_pair(region: &WorldGenRegion<'_>, pos: BlockPos) -> [BlockStateId; 2] {
     let below = pos.below();
-    [region.block_state(pos), region.block_state(below)]
+    region.block_states_for([pos, below])
 }
 
 /// Places vanilla sculk patches at each origin and returns how many placements

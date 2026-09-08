@@ -483,6 +483,8 @@ impl<'a> WorldGenRegion<'a> {
             )
         });
         (state, contended)
+    }
+
     /// Reads several block states with one section lock acquisition per distinct
     /// section, for predicate checks that query multiple nearby blocks.
     ///
