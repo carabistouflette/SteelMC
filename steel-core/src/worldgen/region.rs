@@ -38,7 +38,7 @@ use crate::chunk::{
 use crate::entity::SharedEntity;
 use crate::world::tick_scheduler::TickPriority;
 use crate::world::{LevelAccessor, LevelReader, ScheduledTickAccess, World};
-use crate::worldgen::feature::instrumentation::OreFeatureStats;
+use crate::worldgen::feature::instrumentation::{self, OreFeatureStats};
 use crate::worldgen::generator::context::WorldGenContext;
 
 /// Chunk-cache backed worldgen view for the current generation step.
@@ -432,11 +432,56 @@ impl<'a> WorldGenRegion<'a> {
     /// Panics if the position's chunk is outside this step's direct dependencies.
     #[must_use]
     pub fn block_state(&self, pos: BlockPos) -> BlockStateId {
+        if instrumentation::feature_read_profile_enabled() {
+            let started_at = Instant::now();
+            let (state, contended) = self.profiled_block_state(pos);
+            instrumentation::record_feature_read(started_at.elapsed(), contended);
+            return state;
+        }
+
         let chunk_x = SectionPos::block_to_section_coord(pos.x());
         let chunk_z = SectionPos::block_to_section_coord(pos.z());
         self.with_cached_chunk(chunk_x, chunk_z, ChunkStatus::Empty, |chunk| {
             chunk.chunk.get_block_state(pos)
         })
+    }
+
+    /// Reads a block state with contention accounting for the feature-read profile.
+    ///
+    /// Mirrors the ordinary read path; read-only imposter dependencies hide their
+    /// real sections, so those fall back to the ordinary read without a probe.
+    fn profiled_block_state(&self, pos: BlockPos) -> (BlockStateId, bool) {
+        let chunk_x = SectionPos::block_to_section_coord(pos.x());
+        let chunk_z = SectionPos::block_to_section_coord(pos.z());
+        let min_y = self.min_y();
+        let height = self.height();
+        let mut contended = false;
+        let state = self.with_cached_chunk(chunk_x, chunk_z, ChunkStatus::Empty, |chunk| {
+            let Some(section_index) =
+                WorldGenBulkSectionAccess::section_index(min_y, height, pos.y())
+            else {
+                return REGISTRY.blocks.get_default_state_id(&vanilla_blocks::AIR);
+            };
+            if !chunk.access_mode.allows_writes() {
+                return chunk.chunk.get_block_state(pos);
+            }
+            let Some(section) = chunk.chunk.sections().sections.get(section_index) else {
+                return chunk.chunk.get_block_state(pos);
+            };
+            let guard = match section.try_read() {
+                Some(guard) => guard,
+                None => {
+                    contended = true;
+                    section.read()
+                }
+            };
+            guard.states.get(
+                (pos.x() & 15) as usize,
+                (pos.y() & 15) as usize,
+                (pos.z() & 15) as usize,
+            )
+        });
+        (state, contended)
     }
 
     /// Gets a block entity through the region dependency contract.

@@ -6,6 +6,8 @@
 //! configured features execute normally; concrete block-mutating configured features are
 //! added through the configured-feature runtime registry.
 
+#[cfg(feature = "benchmark-support")]
+pub mod bench_support;
 mod configured;
 mod features;
 pub(crate) mod instrumentation;

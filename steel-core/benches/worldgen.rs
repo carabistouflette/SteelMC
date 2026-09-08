@@ -24,6 +24,8 @@ use steel_core::chunk::section::{ChunkSection, Sections};
 use steel_core::chunk::status::ChunkStatus;
 use steel_core::level_data::WorldGenerationSettings;
 use steel_core::world::{World, WorldConfig, WorldStorageConfig};
+use steel_core::worldgen::WorldGenRegion;
+use steel_core::worldgen::bench_support;
 use steel_core::worldgen::generator::generation_benchmark_support;
 use steel_core::worldgen::{
     ChunkGenerator, ChunkGeneratorType, EndGenerator, GeneratorOutput, NetherGenerator,
@@ -33,7 +35,7 @@ use steel_registry::dimension_type::DimensionType;
 use steel_registry::vanilla_dimension_types;
 use steel_utils::locks::SyncMutex;
 use steel_utils::types::{Difficulty, GameType};
-use steel_utils::{ChunkPos, Identifier};
+use steel_utils::{BlockPos, ChunkPos, Identifier};
 use steel_worldgen::biomes::{BiomeSourceKind, ChunkBiomeSampler};
 use steel_worldgen::noise::Beardifier;
 use tokio::runtime::{Builder as RuntimeBuilder, Runtime};
@@ -687,6 +689,78 @@ fn bench_overworld_features(c: &mut Criterion) {
         "overworld_generate_features",
         Identifier::vanilla_static("overworld"),
     );
+}
+
+// ── Sculk patch read/placement benchmarks ──────────────────────────────────
+
+const SCULK_BENCH_COLUMNS: u64 = 64;
+const SCULK_BENCH_SEED: u64 = 42;
+const SCULK_BENCH_READ_POS: BlockPos = BlockPos::new(8, 50, 8);
+
+fn sculk_bench_region<'a>(
+    fixture: &'a FeatureFixture,
+    step: &'a ChunkStep,
+    center: ChunkPos,
+) -> WorldGenRegion<'a> {
+    let world_seed = fixture.context.world().seed();
+    let region_random = fixture
+        .context
+        .generator
+        .create_worldgen_region_random(world_seed, center);
+    WorldGenRegion::new(
+        fixture.context.as_ref(),
+        step,
+        &fixture.cache,
+        center,
+        region_random,
+    )
+}
+
+fn bench_sculk_reads(c: &mut Criterion) {
+    init_globals_once();
+    let step = GENERATION_PYRAMID.get_step_to(ChunkStatus::Features);
+    let center = ChunkPos::new(0, 0);
+    let columns: Vec<BlockPos> = (0..SCULK_BENCH_COLUMNS)
+        .map(|i| BlockPos::new(1 + ((i % 8) * 2) as i32, 0, 1 + ((i / 8) * 2) as i32))
+        .collect();
+
+    let mut group = c.benchmark_group("sculk");
+    group.sample_size(100);
+    group.warm_up_time(Duration::from_secs(2));
+    group.measurement_time(Duration::from_secs(10));
+
+    {
+        let fixture = build_feature_fixture(Identifier::vanilla_static("overworld"));
+        let region = sculk_bench_region(&fixture, step, center);
+        group.bench_function("sculk_read_pair", |b| {
+            b.iter(|| bench_support::read_pair(&region, black_box(SCULK_BENCH_READ_POS)))
+        });
+    }
+
+    group.throughput(Throughput::Elements(SCULK_BENCH_COLUMNS));
+    group.bench_function("sculk_patch_placement", |b| {
+        b.iter_batched(
+            || {
+                let fixture = build_feature_fixture(Identifier::vanilla_static("overworld"));
+                let region = sculk_bench_region(&fixture, step, center);
+                let origins = bench_support::sculk_bench_origins(&region, &columns, 90, -60);
+                (fixture, origins)
+            },
+            |(fixture, origins)| {
+                black_box(bench_support::place_sculk_patch_stress(
+                    fixture.context.as_ref(),
+                    step,
+                    &fixture.cache,
+                    center,
+                    &origins,
+                    SCULK_BENCH_SEED,
+                ))
+            },
+            criterion::BatchSize::SmallInput,
+        );
+    });
+
+    group.finish();
 }
 
 const CONCURRENT_OVERWORLD_SEED: i64 = 2_965_282_071_327_931_563;
@@ -1888,6 +1962,7 @@ criterion_group!(
     bench_overworld_features,
     bench_nether_features,
     bench_end_features,
+    bench_sculk_reads,
     // Structure starts
     bench_overworld_structure_starts,
     bench_nether_structure_starts,

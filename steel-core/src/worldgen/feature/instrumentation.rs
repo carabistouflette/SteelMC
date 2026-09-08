@@ -27,6 +27,86 @@ pub(crate) fn ore_profile_enabled() -> bool {
     *ORE_PROFILE_ENABLED
 }
 
+static FEATURE_READ_PROFILE_ENABLED: LazyLock<bool> =
+    LazyLock::new(|| env::var_os("STEEL_FEATURE_READ_PROFILE").is_some());
+
+struct FeatureReadTotals {
+    feature_block_reads: AtomicU64,
+    feature_read_time_nanos: AtomicU64,
+    feature_read_contentions: AtomicU64,
+    sculk_patch_placements: AtomicU64,
+}
+
+impl FeatureReadTotals {
+    const fn new() -> Self {
+        Self {
+            feature_block_reads: AtomicU64::new(0),
+            feature_read_time_nanos: AtomicU64::new(0),
+            feature_read_contentions: AtomicU64::new(0),
+            sculk_patch_placements: AtomicU64::new(0),
+        }
+    }
+}
+
+static FEATURE_READ_TOTALS: FeatureReadTotals = FeatureReadTotals::new();
+
+pub(crate) fn feature_read_profile_enabled() -> bool {
+    *FEATURE_READ_PROFILE_ENABLED
+}
+
+pub(crate) fn record_feature_read(elapsed: Duration, contended: bool) {
+    FEATURE_READ_TOTALS
+        .feature_block_reads
+        .fetch_add(1, Ordering::Relaxed);
+    FEATURE_READ_TOTALS
+        .feature_read_time_nanos
+        .fetch_add(duration_nanos(elapsed), Ordering::Relaxed);
+    if contended {
+        FEATURE_READ_TOTALS
+            .feature_read_contentions
+            .fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+pub(crate) fn record_sculk_patch_placement() {
+    FEATURE_READ_TOTALS
+        .sculk_patch_placements
+        .fetch_add(1, Ordering::Relaxed);
+}
+
+/// Logs the accumulated feature-read totals in one line; a no-op unless
+/// `STEEL_FEATURE_READ_PROFILE` is set.
+pub fn log_feature_read_profile() {
+    if !*FEATURE_READ_PROFILE_ENABLED {
+        return;
+    }
+
+    let reads = FEATURE_READ_TOTALS
+        .feature_block_reads
+        .load(Ordering::Relaxed);
+    let read_time_ms = nanos_to_ms(
+        FEATURE_READ_TOTALS
+            .feature_read_time_nanos
+            .load(Ordering::Relaxed),
+    );
+    let contentions = FEATURE_READ_TOTALS
+        .feature_read_contentions
+        .load(Ordering::Relaxed);
+    let sculk_patch_placements = FEATURE_READ_TOTALS
+        .sculk_patch_placements
+        .load(Ordering::Relaxed);
+
+    let message = format!(
+        "feature read profile block_reads={reads} read_ms={read_time_ms:.2} \
+         read_contentions={contentions} sculk_patch_placements={sculk_patch_placements}"
+    );
+    if log::log_enabled!(log::Level::Info) {
+        log::info!("{message}");
+    } else {
+        eprintln!("{message}");
+    }
+}
+
 pub(crate) struct OreFeatureProfile {
     stats: Option<RefCell<OreFeatureStats>>,
 }

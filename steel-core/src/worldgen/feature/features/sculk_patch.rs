@@ -111,6 +111,9 @@ impl FeatureDecorationRunner {
         config: &SculkPatchConfiguration,
         origin: BlockPos,
     ) -> bool {
+        if crate::worldgen::feature::instrumentation::feature_read_profile_enabled() {
+            crate::worldgen::feature::instrumentation::record_sculk_patch_placement();
+        }
         if !Self::can_sculk_spread_from(region, origin) {
             return false;
         }

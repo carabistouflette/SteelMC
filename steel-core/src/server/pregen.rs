@@ -311,6 +311,7 @@ async fn pregen_overworld(
     } else {
         log::info!("Spawn area preparation cancelled after {elapsed_secs:.2}s");
     }
+    crate::worldgen::feature::instrumentation::log_feature_read_profile();
     elapsed.1
 }
 
