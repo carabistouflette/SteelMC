@@ -185,8 +185,16 @@ impl FeatureDecorationRunner {
         true
     }
 
-    fn can_sculk_spread_from(region: &WorldGenRegion<'_>, origin: BlockPos) -> bool {
-        let start = region.block_state(origin);
+    pub(in crate::worldgen::feature) fn can_sculk_spread_from(
+        region: &WorldGenRegion<'_>,
+        origin: BlockPos,
+    ) -> bool {
+        let mut positions = [origin; 7];
+        for (index, direction) in Self::VANILLA_DIRECTION_VALUES.iter().enumerate() {
+            positions[index + 1] = origin.relative(*direction);
+        }
+        let states = region.block_states_for(positions);
+        let start = states[0];
         if !matches!(Self::sculk_behavior(start), SculkBehaviorKind::Default) {
             return true;
         }
@@ -198,11 +206,14 @@ impl FeatureDecorationRunner {
             return false;
         }
 
-        Self::VANILLA_DIRECTION_VALUES.iter().any(|direction| {
-            let pos = origin.relative(*direction);
-            let state = region.block_state(pos);
-            shapes::is_offset_shape_full_block(state.get_collision_shape_at(pos))
-        })
+        Self::VANILLA_DIRECTION_VALUES
+            .iter()
+            .enumerate()
+            .any(|(index, _direction)| {
+                let pos = positions[index + 1];
+                let state = states[index + 1];
+                shapes::is_offset_shape_full_block(state.get_collision_shape_at(pos))
+            })
     }
 
     fn sculk_update_cursors(
