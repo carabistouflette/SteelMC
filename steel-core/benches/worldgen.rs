@@ -732,8 +732,14 @@ fn bench_sculk_reads(c: &mut Criterion) {
     {
         let fixture = build_feature_fixture(Identifier::vanilla_static("overworld"));
         let region = sculk_bench_region(&fixture, step, center);
+        // The check runs at real origins: air above a floor when it spreads,
+        // air over water or nothing when it rejects.
+        let origin = bench_support::sculk_bench_origins(&region, &columns[0..1], 90, -60).remove(0);
         group.bench_function("sculk_read_pair", |b| {
             b.iter(|| bench_support::read_pair(&region, black_box(SCULK_BENCH_READ_POS)))
+        });
+        group.bench_function("sculk_spread_from", |b| {
+            b.iter(|| bench_support::spread_from(&region, black_box(origin)))
         });
     }
 

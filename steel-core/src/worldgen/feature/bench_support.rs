@@ -24,6 +24,13 @@ pub fn read_pair(region: &WorldGenRegion<'_>, pos: BlockPos) -> [BlockStateId; 2
     region.block_states_for([pos, below])
 }
 
+/// Runs `can_sculk_spread_from` for `origin`, the check every sculk patch
+/// placement starts with: origin plus up to six neighbor reads.
+#[must_use]
+pub fn spread_from(region: &WorldGenRegion<'_>, origin: BlockPos) -> bool {
+    FeatureDecorationRunner::can_sculk_spread_from(region, origin)
+}
+
 /// Places vanilla sculk patches at each origin and returns how many placements
 /// succeeded. Each origin is placed with a fresh `WorldgenRandom` seeded from
 /// `seed`, so the placement sequence is deterministic and comparable across
